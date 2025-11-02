@@ -2,7 +2,7 @@
 #include "Marmot/MarmotDeformationMeasures.h"
 #include "Marmot/MarmotEnergyDensityFunctions.h"
 #include "Marmot/MarmotFastorTensorBasics.h"
-#include "Marmot/MarmotMaterialFiniteStrain.h"
+#include "Marmot/MarmotMaterialGEFiniteStrain.h"
 #include "Marmot/MarmotStressMeasures.h"
 
 namespace Marmot::Materials {
@@ -13,7 +13,7 @@ namespace Marmot::Materials {
   using namespace FastorStandardTensors;
 
   DufourModel::DufourModel( const double* materialProperties, int nMaterialProperties, int materialLabel )
-    : MarmotMaterialFiniteStrain( materialProperties, nMaterialProperties, materialLabel ),
+    : MarmotMaterialGEFiniteStrain( materialProperties, nMaterialProperties, materialLabel ),
       K( materialProperties[0] ),
       G( materialProperties[1] ),
       ft( materialProperties[2] ),
@@ -50,8 +50,9 @@ namespace Marmot::Materials {
     double&         omega     = stateVars->omega;
     const double    omegaOld  = omega;
 
-    nonLocalRadius         = ld;
-    double alphaP_nonlocal = KOld + dK;
+    response.nonLocalRadius = ld;
+    double alphaP_nonlocal  = deformation.A;
+    response.L              = alphaP;
 
     using namespace Marmot;
     using namespace Fastor;
@@ -149,7 +150,11 @@ namespace Marmot::Materials {
 
       /* tangents.dTau_dF = einsum< IJKL, KLMN >( dTau_dPK2, dPK2_dF ) +
        * dTau_dF_partial; */
-      tangents.dTau_dF = einsum< IJKL, KLMN >( dTau_dPK2, dPK2_dF ) + einsum< ijKL, KLMN >( dTau_dFe_partial, dFe_dF );
+      tangents.dTau_dF = einsum< IJKL, KLMN >( dTau_dPK2, dPK2_dF ) +
+                         einsum< ijKL, KLMN >( dTau_dFe_partial, dFe_dF );                                 // adjust
+      tangents.dTau_dA = -einsum< IJKL >( dTau_dPK2, 2. * dPsi_dCe ) * ( dOmega_dAlphaP_nonlocal ) / epsF; // check
+      tangents.dL_dF   = -einsum< IJKL >( dTau_dPK2, 2. * dPsi_dCe ) * ( dAlphaP_weighted_dAlphaP_nonlocal ) /
+                       epsF;                                                                               // check
     }
     else {
       using namespace Marmot::ContinuumMechanics;
@@ -185,6 +190,9 @@ namespace Marmot::Materials {
       /* tangents.dTau_dF = einsum< IJKL, KLMN >( dTau_dPK2, dPK2_dF ) +
        * dTau_dF_partial; */
       tangents.dTau_dF = einsum< IJKL, KLMN >( dTau_dPK2, dPK2_dF ) + einsum< ijKL, KLMN >( dTau_dFe_partial, dFe_dF );
+      tangents.dTau_dA = -einsum< IJKL >( dTau_dPK2, 2. * dPsi_dCe ) * ( dAlphaP_weighted_dAlphaP_nonlocal ) /
+                         epsF;                                                                                  // check
+      tangents.dL_dF = -einsum< IJKL >( dTau_dPK2, 2. * dPsi_dCe ) * ( dAlphaP_weighted_dAlphaP_local ) / epsF; // check
     }
   }
 

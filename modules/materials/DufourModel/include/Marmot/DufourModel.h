@@ -30,7 +30,7 @@
 #include "Marmot/MarmotEnergyDensityFunctions.h"
 #include "Marmot/MarmotFastorTensorBasics.h"
 #include "Marmot/MarmotFiniteStrainPlasticity.h"
-#include "Marmot/MarmotMaterialFiniteStrain.h"
+#include "Marmot/MarmotMaterialGEFiniteStrain.h"
 #include "Marmot/MarmotMath.h"
 #include "Marmot/MarmotStateVarVectorManager.h"
 #include "Marmot/MarmotTypedefs.h"
@@ -42,9 +42,9 @@ namespace Marmot::Materials {
   using namespace FastorStandardTensors;
   using namespace FastorIndices;
 
-  class DufourModel : public MarmotMaterialFiniteStrain {
+  class DufourModel : public MarmotMaterialGEFiniteStrain {
   public:
-    using MarmotMaterialFiniteStrain::MarmotMaterialFiniteStrain;
+    using MarmotMaterialGEFiniteStrain::MarmotMaterialGEFiniteStrain;
 
     // elastic constants
     const double K, G;
