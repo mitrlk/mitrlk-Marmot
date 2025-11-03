@@ -237,8 +237,9 @@ namespace Marmot::Materials {
 
     bool isYielding( const Tensor33d& Fe, const double betaP, const double omega )
     {
-      double f;
-      std::tie( f ) = yieldFunctionNominal( Fe, betaP, omega );
+      double    f, df_dBetaP;
+      Tensor33d df_dFe, dg_dMandel, dh_dFe;
+      std::tie( f, df_dFe, df_dBetaP, dg_dMandel, dh_dFe ) = yieldFunction( Fe, betaP );
       if ( f > 0.0 )
         return true;
       else
