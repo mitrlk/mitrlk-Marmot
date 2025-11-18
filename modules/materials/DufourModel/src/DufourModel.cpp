@@ -85,12 +85,12 @@ namespace Marmot::Materials {
       while ( R.norm() > 1e-12 || dX.norm() > 1e-12 ) {
 
         if ( counter > 15 ) {
-          std::cout << "R:" << R.transpose() << '\n'
-                    << "R_norm" << R.norm() << '\n'
-                    << "X:" << X.transpose() << '\n'
-                    << "dX norm" << dX.norm() << '\n'
-                    << "dR_dX" << '\n'
-                    << dR_dX << std::endl;
+          /*  std::cout << "R:" << R.transpose() << '\n'
+                      << "R_norm" << R.norm() << '\n'
+                      << "X:" << X.transpose() << '\n'
+                      << "dX norm" << dX.norm() << '\n'
+                      << "dR_dX" << '\n'
+                      << dR_dX << std::endl;*/
           throw std::runtime_error( "inner newton not converged" );
         }
 
