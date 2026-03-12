@@ -32,6 +32,7 @@ namespace Marmot::Elements::Registration {
      * */
 
     GCPE8RUL  = CONCAT( 1193, 82801 ),
+    GCPE8UL   = CONCAT( 1193, 82701 ),
     GC3D8UL   = CONCAT( 1193, 82301 ),
     GC3D20UL  = CONCAT( 1193, 202301 ),
     GC3D20RUL = CONCAT( 1193, 202601 ),
@@ -66,7 +67,14 @@ namespace Marmot::Elements::Registration {
                                           FullIntegration,
                                           AxiSymmetricGEDisplacementFiniteStrainULElement< 8 >::PlaneStrain >() );
 
-  const static bool GCPE8RGradientEnhancedMicropolar_isRegistered = MarmotElementFactory::
+  const static bool GCPE8UL_isRegistered = MarmotElementFactory::
+    registerElement( "GCPE8UL",
+                     GEDisplacementFiniteStrainULElementCode::GCPE8UL,
+                     makeFactoryFunction< GEDisplacementFiniteStrainULElement< 2, 8 >,
+                                          FullIntegration,
+                                          GEDisplacementFiniteStrainULElement< 2, 8 >::PlaneStrain >() );
+
+  const static bool GCPE8RUL_isRegistered = MarmotElementFactory::
     registerElement( "GCPE8RUL",
                      GEDisplacementFiniteStrainULElementCode::GCPE8RUL,
                      makeFactoryFunction< GEDisplacementFiniteStrainULElement< 2, 8 >,
