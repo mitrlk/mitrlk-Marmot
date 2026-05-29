@@ -115,7 +115,7 @@ namespace Marmot::Materials {
 
       // compute energy density, first and second partial derivatives wrt Cauchy
       // Green deformation
-      std::tie( psi_, dPsi_dCe, d2Psi_dCedCe ) = EnergyDensityFunctions::SecondOrderDerived::PenceGouPotentialB( Ce,
+      std::tie( psi_, dPsi_dCe, d2Psi_dCedCe ) = EnergyDensityFunctions::SecondOrderDerived::PenceGouPotentialA( Ce,
                                                                                                                  K,
                                                                                                                  G );
       // compute damage variable
@@ -169,7 +169,7 @@ namespace Marmot::Materials {
 
       // compute energy density, first and second partial derivatives wrt Cauchy
       // Green deformation
-      std::tie( psi_, dPsi_dCe, d2Psi_dCedCe ) = EnergyDensityFunctions::SecondOrderDerived::PenceGouPotentialB( Ce,
+      std::tie( psi_, dPsi_dCe, d2Psi_dCedCe ) = EnergyDensityFunctions::SecondOrderDerived::PenceGouPotentialA( Ce,
                                                                                                                  K,
                                                                                                                  G );
       std::tie( omega, dOmega_dAlphaP_local, dOmega_dAlphaP_nonlocal ) = computeOmega( alphaPOld, alphaP_nonlocal );

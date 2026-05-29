@@ -257,7 +257,7 @@ namespace Marmot::Materials {
       Tensor33d   dPsi_dCe;
       Tensor3333d d2Psi_dCedCe, dMandel_dCe;
 
-      std::tie( psi_, dPsi_dCe, d2Psi_dCedCe ) = EnergyDensityFunctions::SecondOrderDerived::PenceGouPotentialB( Ce,
+      std::tie( psi_, dPsi_dCe, d2Psi_dCedCe ) = EnergyDensityFunctions::SecondOrderDerived::PenceGouPotentialA( Ce,
                                                                                                                  K,
                                                                                                                  G );
       Tensor33d       PK2                      = 2.0 * dPsi_dCe;
@@ -279,7 +279,7 @@ namespace Marmot::Materials {
       Tensor33d   dPsi_dCe;
       Tensor3333d d2Psi_dCedCe, dMandelN_dCe;
 
-      std::tie( psi_, dPsi_dCe, d2Psi_dCedCe ) = EnergyDensityFunctions::SecondOrderDerived::PenceGouPotentialB( Ce,
+      std::tie( psi_, dPsi_dCe, d2Psi_dCedCe ) = EnergyDensityFunctions::SecondOrderDerived::PenceGouPotentialA( Ce,
                                                                                                                  K,
                                                                                                                  G );
 

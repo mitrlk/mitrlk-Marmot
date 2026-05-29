@@ -125,6 +125,30 @@ namespace Marmot::ContinuumMechanics {
 
     namespace FirstOrderDerived {
 
+      template < typename T >
+      std::tuple< T, Tensor33t< T > > PenceGouPotentialA( const Tensor33t< T >& C, const double K, const double G )
+      {
+        using namespace FastorIndices;
+
+        const T J  = sqrt( determinant( C ) );
+        const T I1 = trace( C );
+        // energy density
+        T psi = G / 2. * ( I1 - 3. ) + ( K / 2. - G / 3. ) * pow( J - 1, 2 ) - G * log( J );
+
+        // first derivative w.r.t. C
+        const T dPsi_dJ  = ( K - 2. * G / 3. ) * ( J - 1 ) - G / J;
+        const T dPsi_dI1 = G / 2.;
+
+        const Tensor33t< T > CInv   = inverse( C );
+        const Tensor33t< T > dJ_dC  = multiplyFastorTensorWithScalar( transpose( CInv ), T( J / 2. ) );
+        const Tensor33t< T > dI1_dC = fastorTensorFromDoubleTensor< T >( Spatial3D::I );
+
+        Tensor33t< T > dPsi_dC = multiplyFastorTensorWithScalar( dJ_dC, dPsi_dJ ) +
+                                 multiplyFastorTensorWithScalar( dI1_dC, dPsi_dI1 );
+
+        return { psi, dPsi_dC };
+      }
+
       /** @brief Hyperelastic Energy Density Function Wb acc. Pence & Gou (2015), Eq. (2.12) and its first derivative
        * w.r.t. C
        *
@@ -181,6 +205,39 @@ namespace Marmot::ContinuumMechanics {
 
     namespace SecondOrderDerived {
 
+      template < typename T >
+      std::tuple< T, Tensor33t< T >, Tensor3333t< T > > PenceGouPotentialA( const Tensor33t< T >& C,
+                                                                            const double          K,
+                                                                            const double          G )
+      {
+        using namespace FastorIndices;
+
+        const T J  = sqrt( determinant( C ) );
+        const T I1 = trace( C );
+        // energy density
+        T psi = G / 2. * ( I1 - 3. ) + ( K / 2. - G / 3. ) * pow( J - 1, 2 ) - G * log( J );
+        // first derivative w.r.t. C
+        const T dPsi_dJ  = ( K - 2. * G / 3. ) * ( J - 1 ) - G / J;
+        const T dPsi_dI1 = G / 2.;
+
+        const Tensor33t< T > CInv   = inverse( C );
+        const Tensor33t< T > dJ_dC  = 0.5 * J * transpose( CInv );
+        const Tensor33t< T > dI1_dC = Spatial3D::I;
+
+        Tensor33t< T > dPsi_dC = dPsi_dJ * dJ_dC + dPsi_dI1 * dI1_dC;
+
+        // second derivative w.r.t. C
+        const T          d2Psi_dJdJ  = K - 2. * G / 3. + G / ( J * J );
+        const T          d2Psi_dJdI1 = 0;
+        Tensor3333t< T > d2J_dCdC    = J / 4. * einsum< JI, LK, to_IJKL >( CInv, CInv ) -
+                                    J / 2. * einsum< JK, LI, to_IJKL >( CInv, CInv );
+
+        Tensor3333t< T > d2Psi_dCdC = d2Psi_dJdJ * einsum< IJ, KL >( dJ_dC, dJ_dC ) + dPsi_dJ * d2J_dCdC +
+                                      d2Psi_dJdI1 *
+                                        ( einsum< IJ, KL >( dJ_dC, dI1_dC ) + einsum< IJ, KL >( dI1_dC, dJ_dC ) );
+
+        return { psi, dPsi_dC, d2Psi_dCdC };
+      }
       /** @brief Hyperelastic Energy Density Function Wb acc. Pence & Gou (2015), Eq. (2.12) and its first and second
        * derivative w.r.t. C
        *
