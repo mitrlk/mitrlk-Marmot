@@ -67,7 +67,9 @@ namespace Marmot::Materials {
     dFp.eye();
     Tensor33d Fe = FeTrial;
 
-    if ( isYielding( FeTrial, betaP, omegaOld ) ) {
+    const double J = determinant( deformation.F );
+
+    if ( isYielding( FeTrial, betaP, omegaOld, J ) ) {
 
       size_t counter = 0;
 
@@ -80,7 +82,7 @@ namespace Marmot::Materials {
       VectorXd        R  = VectorXd::Zero( 11 );
       Eigen::MatrixXd dR_dX( 11, 11 );
 
-      std::tie( R, dR_dX ) = computeResidualVectorAndTangent( X, FeTrial, alphaPOld, timeIncrement.dT );
+      std::tie( R, dR_dX ) = computeResidualVectorAndTangent( X, FeTrial, alphaPOld, timeIncrement.dT, J );
 
       while ( R.norm() > 1e-12 || dX.norm() > 1e-12 ) {
 
@@ -96,7 +98,7 @@ namespace Marmot::Materials {
 
         dX = -dR_dX.colPivHouseholderQr().solve( R );
         X += dX;
-        std::tie( R, dR_dX ) = computeResidualVectorAndTangent( X, FeTrial, alphaPOld, timeIncrement.dT );
+        std::tie( R, dR_dX ) = computeResidualVectorAndTangent( X, FeTrial, alphaPOld, timeIncrement.dT, J );
         counter += 1;
       }
       // update plastic deformation increment
