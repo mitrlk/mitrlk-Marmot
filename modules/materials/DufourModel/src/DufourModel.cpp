@@ -143,6 +143,11 @@ namespace Marmot::Materials {
                                                                                              FpOld ) ) ) )
                                                      .data() )
                                                .transpose();
+
+      const int       idxF                    = 10;
+      const Tensor33d Finv_T                  = transpose( Fastor::inverse( deformation.F ) );
+      dYdDeformation.block< 1, 9 >( idxF, 0 ) = -( X( 10 ) / n ) * mV9d( Finv_T.data() ).transpose();
+
       MatrixXd dXdDeformation = dR_dX.colPivHouseholderQr().solve( dYdDeformation );
 
       Tensor3333d dFe_dF = Tensor3333d( Matrix9d( dXdDeformation.block< 9, 9 >( 0, 0 ).transpose() ).data() );
