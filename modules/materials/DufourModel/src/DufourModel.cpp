@@ -75,11 +75,15 @@ namespace Marmot::Materials {
 
       using mV9d = Eigen::Map< Eigen::Matrix< double, 9, 1 > >;
       VectorXd X( 11 );
-      X.segment( 0, 9 )  = mV9d( FeTrial.data() );
-      X( 9 )             = alphaPOld;
-      X( 10 )            = 0.0;
-      VectorXd        dX = VectorXd::Zero( 11 );
-      VectorXd        R  = VectorXd::Zero( 11 );
+      X.segment( 0, 9 ) = mV9d( FeTrial.data() );
+      X( 9 )            = alphaPOld;
+      Tensor33d   mandelTrial;
+      Tensor3333d dMandelTrial_dFe;
+      std::tie( mandelTrial, dMandelTrial_dFe ) = computeMandelStress( FeTrial );
+      const double hTrial                       = std::get< 5 >( yieldFunctionFromStress( mandelTrial, betaP, J ) );
+      X( 10 )                                   = timeIncrement.dT * eta_VP / std::max( hTrial, 1e-8 );
+      VectorXd        dX                        = VectorXd::Zero( 11 );
+      VectorXd        R                         = VectorXd::Zero( 11 );
       Eigen::MatrixXd dR_dX( 11, 11 );
 
       std::tie( R, dR_dX ) = computeResidualVectorAndTangent( X, FeTrial, alphaPOld, timeIncrement.dT, J );
@@ -144,9 +148,19 @@ namespace Marmot::Materials {
                                                      .data() )
                                                .transpose();
 
-      const int       idxF                    = 10;
-      const Tensor33d Finv_T                  = transpose( Fastor::inverse( deformation.F ) );
-      dYdDeformation.block< 1, 9 >( idxF, 0 ) = -( X( 10 ) / n ) * mV9d( Finv_T.data() ).transpose();
+      const int       idxF   = 10;
+      const Tensor33d Finv_T = transpose( Fastor::inverse( deformation.F ) );
+
+      double betaP_c, dbeta_c;
+      std::tie( betaP_c, dbeta_c ) = computeBetaP( alphaP );
+      Tensor33d   mandel_c;
+      Tensor3333d dmandel_c;
+      std::tie( mandel_c, dmandel_c ) = computeMandelStress( Fe );
+      const double f_c                = std::get< 0 >( yieldFunctionFromStress( mandel_c, betaP_c, J ) );
+      const double betaP_cap_c        = std::max( betaP_c, 1e-12 );
+      const double ratio_conv         = Math::macauly( f_c + betaP_cap_c ) / betaP_cap_c;
+
+      dYdDeformation.block< 1, 9 >( idxF, 0 ) = ratio_conv * mV9d( Finv_T.data() ).transpose();
 
       MatrixXd dXdDeformation = dR_dX.colPivHouseholderQr().solve( dYdDeformation );
 
