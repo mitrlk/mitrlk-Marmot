@@ -375,16 +375,16 @@ namespace Marmot::Materials {
       double betaP_cap          = sgn_beta * std::max( std::abs( betaP ), beta_min );
       double dBetaP_dAlphaP_cap = ( std::abs( betaP ) > beta_min ) ? sgn_beta * dBetaP_dAlphaP : 0.0;
 
-      double    ratio      = Math::macauly( f + betaP_cap ) / betaP_cap;
-      double    D          = std::pow( ratio, 1.0 / n );
-      Tensor33d dD_dFe     = ( 1.0 / n ) * std::pow( ratio, ( 1.0 - n ) / n ) * df_dFe / betaP_cap;
-      double    dD_dalphaP = -( D / ( n * betaP_cap ) ) * dBetaP_dAlphaP_cap;
+      double ratio = Math::macauly( f + betaP_cap ) / betaP_cap;
+      // double    D          = std::pow( ratio, 1.0 / n );
+      // Tensor33d dD_dFe     = ( 1.0 / n ) * std::pow( ratio, ( 1.0 - n ) / n ) * df_dFe / betaP_cap;
+      // double    dD_dalphaP = -( D / ( n * betaP_cap ) ) * dBetaP_dAlphaP_cap;
 
       const double    hmin  = 1e-8;
       const double    hsafe = std::max( h, hmin );
       const Tensor33d hZero( 0.0 );
       const Tensor33d dh_dMandel_safe = ( h > hmin ) ? dh_dMandel : hZero;
-      // const Tensor33d dh_dFe_safe        = einsum< mn, mnij, to_ij >( dh_dMandel_safe, dMandel_dFe );
+      const Tensor33d dh_dFe_safe     = einsum< mn, mnij, to_ij >( dh_dMandel_safe, dMandel_dFe );
 
       double q  = dLambda * hsafe / ( dt * eta_VP );
       double qn = std::pow( std::max( q, 1e-30 ), n );
@@ -412,7 +412,7 @@ namespace Marmot::Materials {
       Tensor33d dRl_dFe = df_dFe / betaP_cap - ( n * qn / hsafe ) * dh_dFe_safe;
 
       dR_dX.block< 1, 9 >( idxF, 0 ) = mV9d( dRl_dFe.data() ).transpose();
-      dR_dX( idxF, idxA )            = -dBetaP_dAlphaP * ratio / betaP_cap;
+      dR_dX( idxF, idxA )            = -dBetaP_dAlphaP_cap * ratio / betaP_cap;
       dR_dX( idxF, idxF )            = -n * qn / std::max( dLambda, 1e-30 );
 
       return { R, dR_dX };
