@@ -33,6 +33,7 @@ namespace Marmot::Materials {
       omegaMax( materialProperties[16] ),
       ld( materialProperties[17] ),
       m( materialProperties[18] ),
+      alphaP0( nMaterialProperties > 20 ? materialProperties[20] : 0.0 ),
       density( nMaterialProperties > 19 ? materialProperties[19] : 0.0 )
   {
   }

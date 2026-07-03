@@ -61,6 +61,11 @@ namespace Marmot::Materials {
     // damage
     const double epsF, omegaMax, ld, m;
 
+    // damage initiation threshold (Grassl/Jirasek-style delayed onset):
+    // omega = 1 - exp( -< alphaP_weighted - alphaP0 >+ / epsF ).
+    // Optional 21st material property; alphaP0 = 0 reproduces the original law.
+    const double alphaP0;
+
     // mass properties;
     const double density;
 
@@ -113,13 +118,15 @@ namespace Marmot::Materials {
       double dAlphaP_weighted_dAlphaP_local    = 1 - m;
       double dAlphaP_weighted_dAlphaP_nonlocal = m;
 
-      if ( alphaP_weighted < 0.0 ) {
+      if ( alphaP_weighted < alphaP0 ) {
         return { 0.0, 0.0, 0.0 };
       }
 
-      const double omega = 1.0 - exp( -alphaP_weighted / epsF );
+      const double alphaP_eff = alphaP_weighted - alphaP0;
 
-      double dOmega_dAlphaP_weigthed = 1.0 / epsF * exp( -alphaP_weighted / epsF );
+      const double omega = 1.0 - exp( -alphaP_eff / epsF );
+
+      double dOmega_dAlphaP_weigthed = 1.0 / epsF * exp( -alphaP_eff / epsF );
       double dOmega_dAlphaP_local    = dOmega_dAlphaP_weigthed * dAlphaP_weighted_dAlphaP_local;
       double dOmega_dAlphaP_nonlocal = dOmega_dAlphaP_weigthed * dAlphaP_weighted_dAlphaP_nonlocal;
 
