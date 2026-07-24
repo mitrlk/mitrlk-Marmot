@@ -98,6 +98,11 @@ auto testExponentialMapAndDerivative()
   double      a2 = 0.051617096256127606;
   double      a3 = 0.05242059889237864;
   Tensor3333d DexMapexpect;
+  // Fastor tensors are not zero-initialized by default; the reference below only sets the
+  // non-zero components, so the remainder must be explicitly zeroed. Without this, the unset
+  // entries hold uninitialized stack memory (harmless-looking as 0 on some platforms, but
+  // e.g. ~1e29 garbage on arm64/Apple Silicon), causing spurious comparison failures.
+  DexMapexpect.zeros();
   DexMapexpect( 0, 0, 0, 0 ) = 1.05;
   DexMapexpect( 0, 1, 0, 1 ) = a1;
   DexMapexpect( 1, 0, 1, 0 ) = a1;

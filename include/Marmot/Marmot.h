@@ -82,8 +82,13 @@ namespace MarmotLibrary {
                                   materialFactoryFunction factoryFunction );
 
   private:
-    static std::unordered_map< std::string, int >             materialNameToCodeAssociation;
-    static std::unordered_map< int, materialFactoryFunction > materialFactoryFunctionByCode;
+    // Construct-on-first-use idiom: returning a reference to a function-local static
+    // guarantees the map is constructed before any material-registration static
+    // initializer (in another translation unit) inserts into it, avoiding the static
+    // initialization order fiasco (otherwise the map may be used zero-initialized, whose
+    // max_load_factor == 0 triggers a std::__next_prime overflow on first insert).
+    static std::unordered_map< std::string, int >&             materialNameToCodeAssociation();
+    static std::unordered_map< int, materialFactoryFunction >& materialFactoryFunctionByCode();
   };
 
   /**
@@ -125,8 +130,9 @@ namespace MarmotLibrary {
                                  elementFactoryFunction factoryFunction );
 
   private:
-    static std::unordered_map< std::string, int >            elementNameToCodeAssociation;
-    static std::unordered_map< int, elementFactoryFunction > elementFactoryFunctionByCode;
+    // Construct-on-first-use idiom (see MarmotMaterialFactory above for rationale).
+    static std::unordered_map< std::string, int >&            elementNameToCodeAssociation();
+    static std::unordered_map< int, elementFactoryFunction >& elementFactoryFunctionByCode();
   };
 
 } // namespace MarmotLibrary
