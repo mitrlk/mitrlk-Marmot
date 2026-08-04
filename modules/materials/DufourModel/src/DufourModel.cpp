@@ -33,8 +33,26 @@ namespace Marmot::Materials {
       omegaMax( materialProperties[16] ),
       ld( materialProperties[17] ),
       m( materialProperties[18] ),
-      density( nMaterialProperties > 19 ? materialProperties[19] : 0.0 )
+      density( nMaterialProperties > 19 ? materialProperties[19] : 0.0 ),
+      // optional SWDFM entries 21-24; cSW absent or 0 -> unscaled (original) damage evolution.
+      // bSW defaults to a large value (compression term switched off) and kSW to 0 (no Lode
+      // dependence) so that only cSW has to be supplied to activate the driver.
+      cSW( nMaterialProperties > 20 ? materialProperties[20] : 0.0 ),
+      bSW( nMaterialProperties > 21 ? materialProperties[21] : 1e6 ),
+      kSW( nMaterialProperties > 22 ? materialProperties[22] : 0.0 ),
+      dF( nMaterialProperties > 23 ? materialProperties[23] : 1.0 ),
+      volDriver( nMaterialProperties > 24 ? materialProperties[24] : 0.0 ),
+      Xt( nMaterialProperties > 25 ? materialProperties[25] : 0.0 ),
+      Xc( nMaterialProperties > 26 ? materialProperties[26] : 0.0 ),
+      // optional generalized-Maxwell entries from 27 on; absent or nMaxwell = 0 reproduces the
+      // purely hyperelastic-viscoplastic model exactly.
+      nMaxwell( nMaterialProperties > 27 ? static_cast< int >( materialProperties[27] ) : 0 ),
+      maxwellDev( makeMaxwellProperties( materialProperties, nMaterialProperties, 0 ) ),
+      maxwellVol( makeMaxwellProperties( materialProperties, nMaterialProperties, 1 ) )
   {
+    if ( maxwellDev.sumGamma >= 1.0 || maxwellVol.sumGamma >= 1.0 )
+      throw std::invalid_argument( "DufourModel: the sum of the Maxwell relative moduli must stay below 1, "
+                                   "otherwise the equilibrium branch has non-positive stiffness" );
   }
 
   void DufourModel::computeStress( ConstitutiveResponse< 3 >& response,
@@ -45,13 +63,25 @@ namespace Marmot::Materials {
 
     auto&           Fp = stateVars->Fp;
     const Tensor33d FpOld( Fp );
-    double&         alphaP    = stateVars->alphaP;
-    const double    alphaPOld = alphaP;
-    double&         omega     = stateVars->omega;
-    const double    omegaOld  = omega;
+    double&         alphaP       = stateVars->alphaP;
+    const double    alphaPOld    = alphaP;
+    double&         omega        = stateVars->omega;
+    const double    omegaOld     = omega;
+    double&         driver       = stateVars->damageDriver;
+    const double    driverOld    = driver;
+    double&         alphaPBar    = stateVars->alphaPBar;
+    const double    alphaPBarOld = alphaPBar;
+    double&         alphaD       = stateVars->alphaD;
+    const double    alphaDOld    = alphaD;
+    double&         chiF         = stateVars->chiF;
+    const double    chiFOld      = chiF;
 
     response.nonlocalradius = ld;
     double alphaP_nonlocal  = deformation.A;
+
+    // Published to the Maxwell update, which is reached through computeMandelStress from inside
+    // the return-map Newton iteration and so cannot be handed the TimeIncrement directly.
+    dTCurrent = timeIncrement.dT;
 
     using namespace Marmot;
     using namespace Fastor;
@@ -109,12 +139,13 @@ namespace Marmot::Materials {
       Fe              = X.segment( 0, 9 ).data();
       dFp             = Fastor::inverse( Fe ) % FeTrial;
       alphaP          = X( 9 );
-      response.L      = alphaP;
+      response.L      = volDriver != 0.0 ? alphaD : alphaP;
       Tensor33d FpNew = dFp % Fp;
       memcpy( Fp.data(), FpNew.data(), 9 * sizeof( double ) );
 
       using namespace ContinuumMechanics;
       double      psi_, dOmega_dAlphaP_local, dOmega_dAlphaP_nonlocal;
+      Tensor33d   dOmega_dTau;
       Tensor33d   Ce, dPsi_dCe, tau_eff;
       Tensor3333d dCe_dFe, d2Psi_dCedCe, dTau_dPK2_eff, dTau_dFe_partial_eff;
       std::tie( Ce, dCe_dFe ) = DeformationMeasures::FirstOrderDerived::rightCauchyGreen( Fe );
@@ -124,15 +155,31 @@ namespace Marmot::Materials {
       std::tie( psi_, dPsi_dCe, d2Psi_dCedCe ) = EnergyDensityFunctions::SecondOrderDerived::PenceGouPotentialB( Ce,
                                                                                                                  K,
                                                                                                                  G );
-      // compute damage variable
-      std::tie( omega, dOmega_dAlphaP_local, dOmega_dAlphaP_nonlocal ) = computeOmega( alphaP, alphaP_nonlocal );
-
-      // compute Kirchhoff stress
-      Tensor33d PK2_eff = 2.0 * dPsi_dCe;
+      // compute Kirchhoff stress FIRST: the damage evolution rate is scaled by the stress
+      // triaxiality, so the stress state has to be known before omega can be evaluated.
+      // Viscoelastic relaxation is applied here as well; commit = false, the branch states are
+      // advanced once at the very end of this routine.
+      auto [PK2_eff, dPK2_dCe_eff] = applyViscoelasticity( Tensor33d( 2.0 * dPsi_dCe ),
+                                                           Tensor3333d( 2.0 * d2Psi_dCedCe ),
+                                                           false );
 
       std::tie( tau_eff,
                 dTau_dPK2_eff,
                 dTau_dFe_partial_eff ) = StressMeasures::FirstOrderDerived::KirchhoffStressFromPK2( PK2_eff, Fe );
+
+      // compute damage variable
+      std::tie( omega,
+                dOmega_dAlphaP_local,
+                dOmega_dAlphaP_nonlocal,
+                driver,
+                alphaPBar,
+                chiF,
+                dOmega_dTau ) = computeOmega( volDriver != 0.0 ? alphaD : alphaP,
+                                              alphaP_nonlocal,
+                                              tau_eff,
+                                              driverOld,
+                                              alphaPBarOld,
+                                              chiFOld );
 
       response.tau                  = tau_eff * ( 1.0 - omega );
       response.rho                  = density;
@@ -166,7 +213,7 @@ namespace Marmot::Materials {
 
       Tensor3333d dFe_dF = Tensor3333d( Matrix9d( dXdDeformation.block< 9, 9 >( 0, 0 ).transpose() ).data() );
 
-      Tensor3333d dPK2_dFe_eff = einsum< ijKL, KLMN >( 2. * d2Psi_dCedCe, dCe_dFe );
+      Tensor3333d dPK2_dFe_eff = einsum< ijKL, KLMN >( dPK2_dCe_eff, dCe_dFe );
       Tensor3333d dPK2_dF_eff  = einsum< ijKL, KLMN >( dPK2_dFe_eff, dFe_dF );
 
       /* tangents.dTau_dF = einsum< IJKL, KLMN >( dTau_dPK2, dPK2_dF ) +
@@ -176,14 +223,50 @@ namespace Marmot::Materials {
 
       Tensor33d dAlphaP_local_dF = Tensor33d( Vector9d( dXdDeformation.block< 1, 9 >( 9, 0 ).transpose() ).data() );
 
-      tangents.dTau_dF = ( 1 - omega ) * dTau_dF_eff -
-                         dOmega_dAlphaP_local * Fastor::outer( tau_eff, dAlphaP_local_dF );
+      // dilatant plastic volume: ln Jp = ln det F - ln det Fe  (since Jp = J / Je), so
+      // d(ln Jp)/dF = F^-T - Fe^-T : dFe/dF, exact from the same sensitivity solve.
+      const double lnJpOld = std::log( std::max( Fastor::determinant( FpOld ), 1e-12 ) );
+      const double lnJpNew = std::log( std::max( Fastor::determinant( deformation.F ), 1e-12 ) ) -
+                             std::log( std::max( Fastor::determinant( Fe ), 1e-12 ) );
+      const double dAlphaD = std::max( lnJpNew - lnJpOld, 0.0 ); // clamp: damage is irreversible
+      alphaD               = alphaDOld + dAlphaD;
+      Tensor33d dAlphaD_dF = Tensor33d( 0.0 );
+      if ( dAlphaD > 0.0 ) {
+        const Tensor33d FeinvT = Fastor::transpose( Fastor::inverse( Fe ) );
+        // dAlphaD_dF(K,L) = Finv_T(K,L) - FeinvT(i,j) * dFe_dF(i,j,K,L)   (explicit, unambiguous)
+        for ( int K = 0; K < 3; K++ ) {
+          for ( int L = 0; L < 3; L++ ) {
+            double acc = Finv_T( K, L );
+            for ( int i = 0; i < 3; i++ )
+              for ( int j = 0; j < 3; j++ )
+                acc -= FeinvT( i, j ) * dFe_dF( i, j, K, L );
+            dAlphaD_dF( K, L ) = acc;
+          }
+        }
+      }
+
+      const Tensor33d& dLocal_dF = volDriver != 0.0 ? dAlphaD_dF : dAlphaP_local_dF;
+
+      // stress-driven part of omega: dTau/dF gains  -tau_eff (x) ( dOmega/dTau : dTau_eff/dF )
+      Tensor33d dOmegaStress_dF( 0.0 );
+      for ( int K = 0; K < 3; K++ )
+        for ( int L = 0; L < 3; L++ ) {
+          double acc = 0.0;
+          for ( int i = 0; i < 3; i++ )
+            for ( int j = 0; j < 3; j++ )
+              acc += dOmega_dTau( i, j ) * dTau_dF_eff( i, j, K, L );
+          dOmegaStress_dF( K, L ) = acc;
+        }
+
+      tangents.dTau_dF = ( 1 - omega ) * dTau_dF_eff - dOmega_dAlphaP_local * Fastor::outer( tau_eff, dLocal_dF ) -
+                         Fastor::outer( tau_eff, dOmegaStress_dF );
       tangents.dTau_dA = -tau_eff * dOmega_dAlphaP_nonlocal;
-      tangents.dL_dF   = dAlphaP_local_dF;
+      tangents.dL_dF   = dLocal_dF;
     }
     else {
       using namespace Marmot::ContinuumMechanics;
       double      psi_, dOmega_dAlphaP_local, dOmega_dAlphaP_nonlocal;
+      Tensor33d   dOmega_dTau;
       Tensor33d   Ce, dPsi_dCe, tau_eff;
       Tensor3333d dCe_dFe, d2Psi_dCedCe, dTau_dPK2_eff, dTau_dFe_partial_eff;
       std::tie( Ce, dCe_dFe ) = DeformationMeasures::FirstOrderDerived::rightCauchyGreen( Fe );
@@ -193,22 +276,35 @@ namespace Marmot::Materials {
       std::tie( psi_, dPsi_dCe, d2Psi_dCedCe ) = EnergyDensityFunctions::SecondOrderDerived::PenceGouPotentialB( Ce,
                                                                                                                  K,
                                                                                                                  G );
-      std::tie( omega, dOmega_dAlphaP_local, dOmega_dAlphaP_nonlocal ) = computeOmega( alphaPOld, alphaP_nonlocal );
-
-      // compute Kirchhoff stress
-      Tensor33d PK2_eff = 2. * dPsi_dCe;
+      // compute Kirchhoff stress FIRST (needed by the triaxiality-scaled damage evolution)
+      auto [PK2_eff, dPK2_dCe_eff] = applyViscoelasticity( Tensor33d( 2.0 * dPsi_dCe ),
+                                                           Tensor3333d( 2.0 * d2Psi_dCedCe ),
+                                                           false );
 
       std::tie( tau_eff,
                 dTau_dPK2_eff,
                 dTau_dFe_partial_eff ) = StressMeasures::FirstOrderDerived::KirchhoffStressFromPK2( PK2_eff, Fe );
 
+      std::tie( omega,
+                dOmega_dAlphaP_local,
+                dOmega_dAlphaP_nonlocal,
+                driver,
+                alphaPBar,
+                chiF,
+                dOmega_dTau ) = computeOmega( volDriver != 0.0 ? alphaDOld : alphaPOld,
+                                              alphaP_nonlocal,
+                                              tau_eff,
+                                              driverOld,
+                                              alphaPBarOld,
+                                              chiFOld );
+
       response.tau                  = tau_eff * ( 1.0 - omega );
       response.rho                  = density;
       response.elasticEnergyDensity = psi_;
-      response.L                    = alphaP;
+      response.L                    = volDriver != 0.0 ? alphaD : alphaP;
 
       // compute tangent operator
-      Tensor3333d dPK2_dFe    = einsum< ijKL, KLMN >( 2. * d2Psi_dCedCe, dCe_dFe );
+      Tensor3333d dPK2_dFe    = einsum< ijKL, KLMN >( dPK2_dCe_eff, dCe_dFe );
       Tensor3333d dFe_dF      = einsum< IK, JL, to_IJKL >( Spatial3D::I, transpose( Fastor::inverse( FpOld ) ) );
       Tensor3333d dPK2_dF_eff = einsum< ijKL, KLMN >( dPK2_dFe, dFe_dF );
 
@@ -217,9 +313,39 @@ namespace Marmot::Materials {
 
       Tensor33d dAlphaP_local_dF = Tensor33d( 0.0 );
 
-      tangents.dTau_dF = ( 1 - omega ) * dTau_dF_eff;
+      Tensor33d dOmegaStress_dF( 0.0 );
+      for ( int K = 0; K < 3; K++ )
+        for ( int L = 0; L < 3; L++ ) {
+          double acc = 0.0;
+          for ( int i = 0; i < 3; i++ )
+            for ( int j = 0; j < 3; j++ )
+              acc += dOmega_dTau( i, j ) * dTau_dF_eff( i, j, K, L );
+          dOmegaStress_dF( K, L ) = acc;
+        }
+
+      tangents.dTau_dF = ( 1 - omega ) * dTau_dF_eff - Fastor::outer( tau_eff, dOmegaStress_dF );
       tangents.dTau_dA = -tau_eff * dOmega_dAlphaP_nonlocal;
       tangents.dL_dF   = dAlphaP_local_dF;
+    }
+
+    // ---- advance the Maxwell branch states EXACTLY ONCE per increment, with the converged
+    // elastic deformation. Everything above ran with commit = false, so that the return-map
+    // Newton iteration (and the post-convergence re-evaluations of the Mandel stress) could
+    // evaluate the relaxed stress as often as needed without corrupting the history.
+    if ( nMaxwell > 0 ) {
+      using namespace Marmot::ContinuumMechanics;
+      Tensor33d   CeFinal;
+      Tensor3333d dCeFinal_dFe;
+      std::tie( CeFinal, dCeFinal_dFe ) = DeformationMeasures::FirstOrderDerived::rightCauchyGreen( Fe );
+
+      double      psiFinal;
+      Tensor33d   dPsiFinal_dCe;
+      Tensor3333d d2PsiFinal_dCedCe;
+      std::tie( psiFinal,
+                dPsiFinal_dCe,
+                d2PsiFinal_dCedCe ) = EnergyDensityFunctions::SecondOrderDerived::PenceGouPotentialB( CeFinal, K, G );
+
+      applyViscoelasticity( Tensor33d( 2.0 * dPsiFinal_dCe ), Tensor3333d( 2.0 * d2PsiFinal_dCedCe ), true );
     }
   }
 
@@ -241,5 +367,16 @@ namespace Marmot::Materials {
   void DufourModel::initializeYourself()
   {
     stateVars->Fp.eye();
+    // explicit: the accumulated driver and the previous weighted alphaP must start at zero
+    stateVars->damageDriver = 0.0;
+    stateVars->alphaPBar    = 0.0;
+    stateVars->alphaD       = 0.0;
+    stateVars->chiF         = 0.0;
+    // viscoelasticity: unstressed reference and quiescent Maxwell branches
+    stateVars->PK2Ref.zeros();
+    for ( int i = 0; i < nMaxwellMax * 9; i++ )
+      stateVars->veDev[i] = 0.0;
+    for ( int i = 0; i < nMaxwellMax; i++ )
+      stateVars->veVol[i] = 0.0;
   }
 } // namespace Marmot::Materials

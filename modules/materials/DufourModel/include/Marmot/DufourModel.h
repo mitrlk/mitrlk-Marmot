@@ -30,11 +30,15 @@
 #include "Marmot/MarmotEnergyDensityFunctions.h"
 #include "Marmot/MarmotFastorTensorBasics.h"
 #include "Marmot/MarmotFiniteStrainPlasticity.h"
+#include "Marmot/MarmotFiniteStrainViscoelasticity.h"
 #include "Marmot/MarmotMaterialGradientEnhancedFiniteStrain.h"
 #include "Marmot/MarmotMath.h"
 #include "Marmot/MarmotStateVarVectorManager.h"
 #include "Marmot/MarmotTypedefs.h"
+#include <array>
+#include <cstring>
 #include <string>
+#include <vector>
 
 namespace Marmot::Materials {
 
@@ -61,6 +65,115 @@ namespace Marmot::Materials {
     // damage
     const double epsF, omegaMax, ld, m;
 
+    // Stress-weighted ductile fracture (SWDFM) initiation driver -- OPTIONAL card entries 21-24.
+    //
+    // Abrari Vajari, Neuner, Kammardi Arunachala, Ziccarelli, Deierlein, Linder,
+    // CMAME 400 (2022) 115467, eq. (65)-(66), after Rice & Tracey and Smith et al.:
+    //
+    //   D = cSW * int [ exp( 1.3 T ) - 1/bSW * exp( -1.3 T ) ] * exp( kSW ( |zeta| - 1 ) ) dAlphaP
+    //
+    // with T the stress triaxiality and zeta = cos( 3 theta ) the Lode angle PARAMETER.
+    // Crack initiation at D = 1; dF then governs how fast omega grows past initiation.
+    //
+    // cSW = 0 reproduces the unscaled original model EXACTLY (see computeOmega).
+    const double cSW, bSW, kSW, dF;
+
+    // volDriver = 1 -> damage is driven by the DILATANT PLASTIC VOLUME alphaD = int <d ln Jp>
+    //             instead of the equivalent plastic strain alphaP, and the nonlocal field
+    //             solves for alphaD. Jp = J / Je, so ln Jp = ln det F - ln det Fe (exact).
+    //             Rationale: crazing in glassy polymers is dilatational, shear yielding is not,
+    //             so tr(eps_p) discriminates stress states on its own. Measured ratio
+    //             lnJp/alphaP_bar: 1.22 (Arcan 0 deg) / 1.08 (45) / 0.095 (90) - a factor 13.
+    //             volDriver = 0 -> unchanged behaviour.
+    const double volDriver;
+
+    // Nguyen-type STRESS-BASED failure onset (optional card entries 26-27). Paraboloidal
+    // (Melro) surface in the invariants of the EFFECTIVE Kirchhoff stress:
+    //   phiBar = [ 3 J2 + ( Xc - Xt ) I1 ] / ( Xc Xt ),   onset at phiBar = 1
+    // Xt, Xc are the tensile / compressive FAILURE stresses. Verified: phiBar = 1 at uniaxial
+    // tension sigma = Xt and at uniaxial compression sigma = -Xc.
+    // A RUNNING MAXIMUM is used because the nominal stress falls during softening; the
+    // effective stress plus the max make the driver monotone. Xt = 0 disables this branch.
+    const double Xt, Xc;
+
+    // ------------------------------------------------------------------------------------------
+    // Generalized-Maxwell (Prony) VISCOELASTICITY -- optional card entries 28 onwards.
+    //
+    // After Nguyen, Lani, Pardoen, Morelle & Noels, Int. J. Solids Struct. 96 (2016), Sec. 3.1.3:
+    // a hyperelastic equilibrium spring in parallel with nMaxwell Maxwell branches. The branch
+    // update is the recursive (history-free) exponential scheme of Simo (1987), reused verbatim
+    // from Marmot's own ContinuumMechanics::FiniteStrain::Viscoelasticity helper, which is also
+    // what CompressibleFiniteStrainLinearViscoelasticity uses.
+    //
+    // The relaxation acts on the SECOND PIOLA-KIRCHHOFF stress of the elastic (Pence-Gou B)
+    // potential, i.e. UPSTREAM of the return map: the yield function therefore sees the relaxed
+    // stress, exactly as in the existing hyperelastic-viscoplastic split.
+    //
+    // Card layout, per branch i = 0 .. nMaxwell-1:
+    //     [27]          nMaxwell            number of branches (0..nMaxwellMax)
+    //     [28 + 3 i]    gammaG_i            DEVIATORIC relative modulus of branch i
+    //     [29 + 3 i]    gammaK_i            VOLUMETRIC relative modulus of branch i
+    //     [30 + 3 i]    tau_i               relaxation time of branch i  [s]
+    //
+    // NOTE on the parameter convention: gammaG_i / gammaK_i are RELATIVE (dimensionless) moduli,
+    // gammaG_i = G_i / G_0, not absolute stiffnesses. The equilibrium branch carries the
+    // remainder ( 1 - sum_i gamma_i ), which is the convention the Marmot helper requires and
+    // which makes the reduction exact: nMaxwell = 0, or all gamma_i = 0, reproduces the current
+    // purely hyperelastic-viscoplastic model bit for bit.
+    //
+    // Deviatoric and volumetric relaxation are kept SEPARATE (own gamma, shared tau) because a
+    // structural adhesive does not creep equally in shear and in bulk. Setting gammaK_i = 0
+    // gives shear-only creep; setting gammaK_i = gammaG_i gives proportional relaxation of the
+    // whole PK2 tensor, which is what the in-tree VE material does.
+    //
+    // COMPILE-TIME ceiling on the number of branches; it only sizes the static state-var layout.
+    // The number actually used is the CARD entry nMaxwell (<= this). Set to 7 because Dufour
+    // PUBLISHES a 7-term series for SikaPower-498 (IJAA 2016, Tab. 1) -- these are measured
+    // parameters, not quantities identified from our three loading rates, so the usual
+    // "n rates cannot identify more than ~n branches" argument does not apply and there is no
+    // reason to condense the series and pay the approximation error.
+    inline const static int nMaxwellMax = 7;
+
+    const int nMaxwell;
+
+    /// Deviatoric branch set: weights gammaG_i, relaxation times tau_i.
+    const ContinuumMechanics::FiniteStrain::Viscoelasticity::MaxwellProperties maxwellDev;
+    /// Volumetric branch set: weights gammaK_i, the same relaxation times tau_i.
+    const ContinuumMechanics::FiniteStrain::Viscoelasticity::MaxwellProperties maxwellVol;
+
+    /// Time increment of the step currently being solved. Set once at the top of computeStress so
+    /// that the Maxwell update is available to computeMandelStress inside the return-map Newton
+    /// loop, which has no access to the TimeIncrement.
+    double dTCurrent = 0.0;
+
+    /** Build a MaxwellProperties set from the (gammaG, gammaK, tau) triplets on the card.
+     *
+     * @param which 0 -> deviatoric weights (gammaG), 1 -> volumetric weights (gammaK).
+     *
+     * The Marmot helper expects an interleaved (gamma, tau) pair vector, so the triplets are
+     * repacked here; the validation (tau > 0, nMaxwell >= 0) is left to createMaxwellProperties.
+     */
+    static ContinuumMechanics::FiniteStrain::Viscoelasticity::MaxwellProperties makeMaxwellProperties(
+      const double* materialProperties,
+      int           nMaterialProperties,
+      int           which )
+    {
+      const int n = nMaterialProperties > 27 ? static_cast< int >( materialProperties[27] ) : 0;
+      if ( n <= 0 )
+        return ContinuumMechanics::FiniteStrain::Viscoelasticity::createMaxwellProperties( 0, nullptr );
+      if ( n > nMaxwellMax )
+        throw std::invalid_argument( "DufourModel: too many Maxwell branches for the state-var layout" );
+      if ( nMaterialProperties < 28 + 3 * n )
+        throw std::invalid_argument( "DufourModel: incomplete (gammaG, gammaK, tau) triplets on the material card" );
+
+      std::vector< double > pairs( 2 * n );
+      for ( int i = 0; i < n; i++ ) {
+        pairs[2 * i]     = materialProperties[28 + 3 * i + which]; // gammaG_i or gammaK_i
+        pairs[2 * i + 1] = materialProperties[30 + 3 * i];         // tau_i (shared)
+      }
+      return ContinuumMechanics::FiniteStrain::Viscoelasticity::createMaxwellProperties( n, pairs.data() );
+    }
+
     // mass properties;
     const double density;
 
@@ -82,17 +195,49 @@ namespace Marmot::Materials {
         { .name = "Fp", .length = 9 },
         { .name = "alphaP", .length = 1 },
         { .name = "omega", .length = 1 },
+        // accumulated damage driver  D = int d(alphaP_weighted) / epsF_eff( eta ),
+        // and the previous converged alphaP_weighted needed to form its increment.
+        // Only used when c_eta != 0; both stay consistent with omega otherwise.
+        { .name = "damageDriver", .length = 1 },
+        { .name = "alphaPBar", .length = 1 },
+        { .name = "alphaD", .length = 1 },
+        { .name = "chiF", .length = 1 },
+        // ---- viscoelasticity -------------------------------------------------------------
+        // PK2Ref  : the hyperelastic (unrelaxed) PK2 stress of the last CONVERGED increment.
+        //           The Maxwell recurrence is driven by its increment, so it has to persist.
+        // veDev   : deviatoric branch stresses Q_i, 9 doubles each.
+        // veVol   : volumetric branch stresses q_i. One SCALAR each: the volumetric branch
+        //           stress is spherical by construction, so only its (0,0) entry is stored.
+        // Allocated for nMaxwellMax branches unconditionally so that the layout stays static;
+        // unused branches simply remain zero. 79 doubles when nMaxwellMax = 7.
+        { .name = "PK2Ref", .length = 9 },
+        { .name = "veDev", .length = nMaxwellMax * 9 },
+        { .name = "veVol", .length = nMaxwellMax },
       } );
 
       Fastor::TensorMap< double, 3, 3 > Fp;
       double&                           alphaP;
       double&                           omega;
+      double&                           damageDriver;
+      double&                           alphaPBar;
+      double&                           alphaD;
+      double&                           chiF;
+      Fastor::TensorMap< double, 3, 3 > PK2Ref;
+      double*                           veDev;
+      double*                           veVol;
 
       DufourModelStateVarManager( double* theStateVarVector )
         : MarmotStateVarVectorManager( theStateVarVector, layout ),
           Fp( &find( "Fp" ) ),
           alphaP( find( "alphaP" ) ),
-          omega( find( "omega" ) ){};
+          omega( find( "omega" ) ),
+          damageDriver( find( "damageDriver" ) ),
+          alphaPBar( find( "alphaPBar" ) ),
+          alphaD( find( "alphaD" ) ),
+          chiF( find( "chiF" ) ),
+          PK2Ref( &find( "PK2Ref" ) ),
+          veDev( &find( "veDev" ) ),
+          veVol( &find( "veVol" ) ){};
     };
     std::unique_ptr< DufourModelStateVarManager > stateVars;
 
@@ -106,29 +251,283 @@ namespace Marmot::Materials {
     // Damage functions
     // ------------------------------------------------------------
 
-    std::tuple< double, double, double > computeOmega( const double alphaP_local, const double alphaP_nonlocal )
+    /** Stress triaxiality eta = p/q of a Kirchhoff stress.
+     *
+     * eta is a RATIO of invariants, so it is identical for the Kirchhoff, Cauchy and effective
+     * (undamaged) stress - the factors J and (1-omega) cancel. It may therefore be evaluated on
+     * whichever measure is at hand.
+     */
+    static double triaxiality( const Tensor33d& tau )
     {
-      double alphaP_weighted = alphaP_nonlocal * m + alphaP_local * ( 1 - m );
+      const double p = ( tau( 0, 0 ) + tau( 1, 1 ) + tau( 2, 2 ) ) / 3.0;
 
-      double dAlphaP_weighted_dAlphaP_local    = 1 - m;
-      double dAlphaP_weighted_dAlphaP_nonlocal = m;
+      double J2 = 0.0;
+      for ( int i = 0; i < 3; i++ ) {
+        for ( int j = 0; j < 3; j++ ) {
+          const double s_ij = tau( i, j ) - ( i == j ? p : 0.0 );
+          J2 += s_ij * s_ij;
+        }
+      }
+      J2 *= 0.5;
+
+      const double q = std::sqrt( std::max( 3.0 * J2, 0.0 ) );
+
+      // near-hydrostatic or unstressed: eta is meaningless, fall back to 0 (shear-like)
+      if ( q < 1e-12 * std::max( 1.0, std::abs( p ) ) ) {
+        return 0.0;
+      }
+      return p / q;
+    }
+
+    /** Lode angle PARAMETER zeta = cos( 3 theta ) = 3 sqrt(3) J3 / ( 2 J2^(3/2) ).
+     *
+     * zeta = +1 axisymmetric tension, 0 pure shear, -1 axisymmetric compression. This is the
+     * normalisation used in CMAME 400 (2022) 115467 eq. (64); note it differs from
+     * thetaBar = 1 - 6 theta / pi (same endpoints, monotonically related, not equal).
+     * No arccos is needed, so it is cheaper and free of branch issues.
+     */
+    static double lodeParameter( const Tensor33d& tau )
+    {
+      const double p = ( tau( 0, 0 ) + tau( 1, 1 ) + tau( 2, 2 ) ) / 3.0;
+
+      Tensor33d s( tau );
+      for ( int i = 0; i < 3; i++ )
+        s( i, i ) -= p;
+
+      double J2 = 0.0;
+      for ( int i = 0; i < 3; i++ )
+        for ( int j = 0; j < 3; j++ )
+          J2 += s( i, j ) * s( i, j );
+      J2 *= 0.5;
+
+      if ( J2 < 1e-24 ) {
+        return 0.0;
+      }
+      const double J3 = Fastor::determinant( s );
+
+      return std::min( std::max( 1.5 * std::sqrt( 3.0 ) * J3 / std::pow( J2, 1.5 ), -1.0 ), 1.0 );
+    }
+
+    /** Paraboloidal (Melro) failure measure of a stress tensor: phiBar = 1 on the surface. */
+    static double paraboloidalMeasure( const Tensor33d& tau, const double Xt, const double Xc )
+    {
+      const double I1 = tau( 0, 0 ) + tau( 1, 1 ) + tau( 2, 2 );
+      const double p  = I1 / 3.0;
+      double       J2 = 0.0;
+      for ( int i = 0; i < 3; i++ )
+        for ( int j = 0; j < 3; j++ ) {
+          const double s_ij = tau( i, j ) - ( i == j ? p : 0.0 );
+          J2 += s_ij * s_ij;
+        }
+      J2 *= 0.5;
+      return ( 3.0 * J2 + ( Xc - Xt ) * I1 ) / ( Xc * Xt );
+    }
+
+    /// Rice-Tracey / Smith exponent in the SWDFM driver. A micromechanical constant, NOT fitted.
+    inline const static double swdfmExponent = 1.3;
+
+    /// eta beyond these bounds is clamped so that epsF_eff stays bounded away from 0 and infinity.
+    inline const static double etaMin = -0.5;
+    inline const static double etaMax = 1.2;
+
+    /** Damage variable omega and its derivatives wrt the local / nonlocal alphaP.
+     *
+     * Unscaled (c_eta == 0), IDENTICAL to the original formulation:
+     *
+     *     omega = 1 - exp( -alphaP_weighted / epsF )
+     *
+     * Triaxiality-scaled (c_eta != 0), the damage rate is scaled by the stress state and the
+     * driver is accumulated INCREMENTALLY, because eta evolves during loading:
+     *
+     *     epsF_eff( eta ) = epsF * exp( -c_eta * clamp( eta ) )
+     *     D  = D_old + max( 0, alphaP_weighted - alphaPBar_old ) / epsF_eff
+     *     omega = 1 - exp( -D )
+     *
+     * The functional form of omega is unchanged; only the rate at which its driver accumulates
+     * depends on the stress state. Accumulation makes damage irreversible.
+     *
+     * Returns { omega, dOmega_dAlphaP_local, dOmega_dAlphaP_nonlocal, D_new, alphaPBar_new }.
+     */
+    std::tuple< double, double, double, double, double, double, Tensor33d > computeOmega( const double alphaP_local,
+                                                                                          const double alphaP_nonlocal,
+                                                                                          const Tensor33d& tau_eff,
+                                                                                          const double     D_old,
+                                                                                          const double alphaPBar_old,
+                                                                                          const double chiF_old )
+    {
+      const double alphaP_weighted = alphaP_nonlocal * m + alphaP_local * ( 1 - m );
+
+      const double dAlphaP_weighted_dAlphaP_local    = 1 - m;
+      const double dAlphaP_weighted_dAlphaP_nonlocal = m;
 
       if ( alphaP_weighted < 0.0 ) {
-        return { 0.0, 0.0, 0.0 };
+        return { 0.0, 0.0, 0.0, D_old, alphaPBar_old, chiF_old, Tensor33d( 0.0 ) };
       }
 
-      const double omega = 1.0 - exp( -alphaP_weighted / epsF );
+      const double alphaPBar_new = alphaP_weighted;
 
-      double dOmega_dAlphaP_weigthed = 1.0 / epsF * exp( -alphaP_weighted / epsF );
-      double dOmega_dAlphaP_local    = dOmega_dAlphaP_weigthed * dAlphaP_weighted_dAlphaP_local;
-      double dOmega_dAlphaP_nonlocal = dOmega_dAlphaP_weigthed * dAlphaP_weighted_dAlphaP_nonlocal;
+      // ---- (1) SOFTENING variable: the original law, ALWAYS active and already calibrated.
+      //          This is what reproduces the pre-peak response; removing it before initiation
+      //          would lose the calibrated peak forces.
+      const double omega_s  = 1.0 - exp( -alphaP_weighted / epsF );
+      const double dOmega_s = exp( -alphaP_weighted / epsF ) / epsF;
+
+      // ---- (2) FAILURE variable: zero until the SWDFM driver reaches D = 1, then steep.
+      //          Two-variable structure after Nguyen, Lani, Pardoen, Morelle & Noels,
+      //          Int. J. Solids Struct. 96 (2016), which separates gradual softening from the
+      //          final failure stage.
+      double    omega_f     = 0.0;
+      double    dOmega_f    = 0.0;
+      double    D           = D_old;
+      double    chiF_new    = chiF_old;
+      Tensor33d dOmega_dTau = Tensor33d( 0.0 );
+
+      if ( Xt != 0.0 ) {
+        // ---- STRESS-BASED onset (Nguyen / Melro). Running max keeps the driver monotone.
+        const double phiBar = paraboloidalMeasure( tau_eff, Xt, Xc );
+        const bool   active = phiBar >= chiF_old; // the max is being SET this increment
+        chiF_new            = std::max( chiF_old, phiBar );
+
+        if ( chiF_new > 1.0 ) {
+          omega_f = 1.0 - exp( -( chiF_new - 1.0 ) / dF );
+          // omega_f is stress-driven, so it contributes to the tangent through dTau/dF rather
+          // than through dAlphaP. dOmega_f/dAlphaP is therefore genuinely zero here, and the
+          // coupling is carried by dOmega_dTau below.
+          dOmega_f = 0.0;
+
+          if ( active ) {
+            // dPhiBar/dTau = [ 3 dev(tau) + ( Xc - Xt ) I ] / ( Xc Xt ),  since dJ2/dTau = dev
+            const double trTau = tau_eff( 0, 0 ) + tau_eff( 1, 1 ) + tau_eff( 2, 2 );
+            Tensor33d    dev( tau_eff );
+            for ( int i = 0; i < 3; i++ )
+              dev( i, i ) -= trTau / 3.0;
+
+            Tensor33d dPhi_dTau = 3.0 * dev;
+            for ( int i = 0; i < 3; i++ )
+              dPhi_dTau( i, i ) += ( Xc - Xt );
+            dPhi_dTau = dPhi_dTau / ( Xc * Xt );
+
+            // omega = 1 - (1-omega_s)(1-omega_f)  ->  dOmega/dChi = (1-omega_s) dOmega_f/dChi
+            const double dOmega_f_dChi = exp( -( chiF_new - 1.0 ) / dF ) / dF;
+            dOmega_dTau                = ( 1.0 - omega_s ) * dOmega_f_dChi * dPhi_dTau;
+          }
+        }
+      }
+      else if ( cSW != 0.0 ) {
+        const double T    = std::min( std::max( triaxiality( tau_eff ), etaMin ), etaMax );
+        const double zeta = lodeParameter( tau_eff );
+
+        // When the driver is already the dilatant plastic volume, the Rice-Tracey factor would
+        // DOUBLE-COUNT the pressure sensitivity (exp(1.3T) dAlphaP is itself a void-growth
+        // proxy), so it is switched off and the stress-state dependence comes from alphaD alone.
+        double g = volDriver != 0.0 ? 1.0 : exp( swdfmExponent * T ) - exp( -swdfmExponent * T ) / bSW;
+        if ( volDriver == 0.0 )
+          g *= exp( kSW * ( std::abs( zeta ) - 1.0 ) );
+        g = std::max( g, 0.0 ); // damage is irreversible under monotonic loading
+
+        const double dAlphaPBar = std::max( alphaP_weighted - alphaPBar_old, 0.0 );
+        D                       = D_old + cSW * g * dAlphaPBar;
+
+        if ( D > 1.0 ) {
+          omega_f  = 1.0 - exp( -( D - 1.0 ) / dF );
+          dOmega_f = exp( -( D - 1.0 ) / dF ) / dF * cSW * g;
+        }
+      }
+
+      const double omega                   = 1.0 - ( 1.0 - omega_s ) * ( 1.0 - omega_f );
+      const double dOmega_dAlphaP_weigthed = ( 1.0 - omega_f ) * dOmega_s + ( 1.0 - omega_s ) * dOmega_f;
+
+      // T and zeta are held fixed in the tangent (the dOmega/dT * dT/dTau contribution is
+      // deliberately omitted), so the structure of the tangent is unchanged.
+      const double dOmega_dAlphaP_local    = dOmega_dAlphaP_weigthed * dAlphaP_weighted_dAlphaP_local;
+      const double dOmega_dAlphaP_nonlocal = dOmega_dAlphaP_weigthed * dAlphaP_weighted_dAlphaP_nonlocal;
 
       if ( omega > omegaMax ) {
-        return { omegaMax, 0.0, 0.0 };
+        return { omegaMax, 0.0, 0.0, D, alphaPBar_new, chiF_new, Tensor33d( 0.0 ) };
       }
       else {
-        return { omega, dOmega_dAlphaP_local, dOmega_dAlphaP_nonlocal };
+        return { omega, dOmega_dAlphaP_local, dOmega_dAlphaP_nonlocal, D, alphaPBar_new, chiF_new, dOmega_dTau };
       }
+    }
+
+    // ------------------------------------------------------------
+    // Viscoelasticity (generalized Maxwell / Prony)
+    // ------------------------------------------------------------
+
+    /** Relax the instantaneous hyperelastic PK2 stress through the generalized Maxwell chain.
+     *
+     * The deviatoric and volumetric parts are relaxed independently, each by its own set of
+     * relative moduli but sharing the relaxation times, so that shear creep and bulk creep can
+     * differ. Both calls go through Marmot's own
+     * ContinuumMechanics::FiniteStrain::Viscoelasticity::evaluateGeneralizedMaxwellModel, i.e.
+     * the recurrence Q_i^{n+1} = exp(-dt/tau_i) Q_i^n + gamma_i (1-exp(-dt/tau_i))/(dt/tau_i) dS
+     * and the matching closed-form tangent scaling are NOT reimplemented here.
+     *
+     * The volumetric branch stresses stay spherical for all time (the driver is spherical and
+     * the recurrence is linear), so only their scalar magnitude is persisted; the 3x3 form is
+     * rebuilt on entry and collapsed again on exit.
+     *
+     * @param PK2_0      instantaneous (unrelaxed) PK2 stress of the Pence-Gou potential
+     * @param dPK2_0_dCe its derivative wrt the elastic right Cauchy-Green tensor
+     * @param commit     false -> the branch states are advanced on a SCRATCH copy, leaving the
+     *                            converged history untouched, so that this may be called as
+     *                            often as the return-map Newton iteration needs;
+     *                   true  -> the advanced branch states and the new reference stress are
+     *                            written back to stateVars. Call exactly ONCE per increment,
+     *                            with the converged elastic deformation.
+     * @return { PK2 including relaxation, its derivative wrt Ce }
+     */
+    std::tuple< Tensor33d, Tensor3333d > applyViscoelasticity( const Tensor33d&   PK2_0,
+                                                               const Tensor3333d& dPK2_0_dCe,
+                                                               const bool         commit )
+    {
+      // no Maxwell branches -> bit-for-bit the original hyperelastic-viscoplastic model
+      if ( nMaxwell == 0 )
+        return { PK2_0, dPK2_0_dCe };
+
+      using namespace ContinuumMechanics::FiniteStrain::Viscoelasticity;
+
+      // ---- split the instantaneous stress and its tangent into volumetric / deviatoric parts.
+      //      d(PK2vol)_ij/dCe_kl = 1/3 delta_ij d(tr PK2)/dCe_kl; the contraction below yields
+      //      d(tr PK2)/dCe because 2 d2Psi/dCdC is major symmetric.
+      const double    p0       = trace( PK2_0 ) / 3.0;
+      const Tensor33d PK2Vol_0 = p0 * Spatial3D::I;
+      const Tensor33d PK2Dev_0 = PK2_0 - PK2Vol_0;
+
+      const Tensor3333d dPK2Vol_dCe = ( 1.0 / 3.0 ) *
+                                      Fastor::outer( Spatial3D::I,
+                                                     Tensor33d( einsum< ijkl, kl >( dPK2_0_dCe, Spatial3D::I ) ) );
+      const Tensor3333d dPK2Dev_dCe = dPK2_0_dCe - dPK2Vol_dCe;
+
+      // ---- the recurrence is driven by the increment since the last CONVERGED increment
+      const Tensor33d PK2RefOld( stateVars->PK2Ref );
+      const double    pRefOld     = trace( PK2RefOld ) / 3.0;
+      const Tensor33d dPK2Vol     = ( p0 - pRefOld ) * Spatial3D::I;
+      const Tensor33d dPK2Dev     = PK2Dev_0 - ( PK2RefOld - pRefOld * Spatial3D::I );
+
+      // ---- branch states. The helper writes through its pointer, so an uncommitted evaluation
+      //      is given a scratch buffer instead of the persistent state.
+      std::array< double, nMaxwellMax * 9 > devState{};
+      std::array< double, nMaxwellMax * 9 > volState{};
+      std::memcpy( devState.data(), stateVars->veDev, nMaxwell * 9 * sizeof( double ) );
+      for ( int i = 0; i < nMaxwell; i++ )
+        for ( int d = 0; d < 3; d++ )
+          volState[i * 9 + d * 4] = stateVars->veVol[i]; // rebuild q_i * I
+
+      Tensor33d   PK2Dev = PK2Dev_0, PK2Vol = PK2Vol_0;
+      Tensor3333d tanDev = dPK2Dev_dCe, tanVol = dPK2Vol_dCe;
+
+      evaluateGeneralizedMaxwellModel( PK2Dev, tanDev, dPK2Dev, dTCurrent, maxwellDev, devState.data() );
+      evaluateGeneralizedMaxwellModel( PK2Vol, tanVol, dPK2Vol, dTCurrent, maxwellVol, volState.data() );
+
+      if ( commit ) {
+        std::memcpy( stateVars->veDev, devState.data(), nMaxwell * 9 * sizeof( double ) );
+        for ( int i = 0; i < nMaxwell; i++ )
+          stateVars->veVol[i] = volState[i * 9]; // spherical -> keep the magnitude only
+        std::memcpy( stateVars->PK2Ref.data(), PK2_0.data(), 9 * sizeof( double ) );
+      }
+
+      return { Tensor33d( PK2Dev + PK2Vol ), Tensor3333d( tanDev + tanVol ) };
     }
 
     // ------------------------------------------------------------
@@ -265,9 +664,14 @@ namespace Marmot::Materials {
       std::tie( psi_, dPsi_dCe, d2Psi_dCedCe ) = EnergyDensityFunctions::SecondOrderDerived::PenceGouPotentialB( Ce,
                                                                                                                  K,
                                                                                                                  G );
-      Tensor33d       PK2                      = 2.0 * dPsi_dCe;
-      const Tensor33d mandel                   = Ce % PK2;
-      dMandel_dCe                              = einsum< Ii, iJKL, to_IJKL >( Ce, 2. * d2Psi_dCedCe ) +
+      // Viscoelastic relaxation happens HERE, upstream of the return map, so that the yield
+      // function sees the relaxed stress. commit = false: this is called inside the Newton loop.
+      auto [PK2, dPK2_dCe] = applyViscoelasticity( Tensor33d( 2.0 * dPsi_dCe ),
+                                                   Tensor3333d( 2.0 * d2Psi_dCedCe ),
+                                                   false );
+
+      const Tensor33d mandel = Ce % PK2;
+      dMandel_dCe            = einsum< Ii, iJKL, to_IJKL >( Ce, dPK2_dCe ) +
                     einsum< IK, iL, iJ, to_IJKL >( Spatial3D::I, Spatial3D::I, PK2 );
       Tensor3333d dMandel_dFe = einsum< IJKL, KLMN >( dMandel_dCe, dCe_dFe );
       return { mandel, dMandel_dFe };
@@ -288,10 +692,13 @@ namespace Marmot::Materials {
                                                                                                                  K,
                                                                                                                  G );
 
-      Tensor33d       PK2     = 2.0 * dPsi_dCe;
+      auto [PK2, dPK2_dCe] = applyViscoelasticity( Tensor33d( 2.0 * dPsi_dCe ),
+                                                   Tensor3333d( 2.0 * d2Psi_dCedCe ),
+                                                   false );
+
       const Tensor33d mandelN = ( Ce % PK2 ) * ( 1.0 - omega );
 
-      dMandelN_dCe = ( einsum< Ii, iJKL, to_IJKL >( Ce, 2. * d2Psi_dCedCe ) +
+      dMandelN_dCe = ( einsum< Ii, iJKL, to_IJKL >( Ce, dPK2_dCe ) +
                        einsum< IK, iL, iJ, to_IJKL >( Spatial3D::I, Spatial3D::I, PK2 ) ) *
                      ( 1.0 - omega );
 
