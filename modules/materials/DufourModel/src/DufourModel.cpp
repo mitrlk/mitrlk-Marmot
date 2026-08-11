@@ -44,6 +44,9 @@ namespace Marmot::Materials {
       volDriver( nMaterialProperties > 24 ? materialProperties[24] : 0.0 ),
       Xt( nMaterialProperties > 25 ? materialProperties[25] : 0.0 ),
       Xc( nMaterialProperties > 26 ? materialProperties[26] : 0.0 ),
+      // two-branch Rice-Tracey weight: the two entries AFTER the Prony triplets. Absent -> 0 -> off.
+      swdfmT0( swdfmExtra( materialProperties, nMaterialProperties, 0 ) ),
+      swdfmExp2( swdfmExtra( materialProperties, nMaterialProperties, 1 ) ),
       // optional generalized-Maxwell entries from 27 on; absent or nMaxwell = 0 reproduces the
       // purely hyperelastic-viscoplastic model exactly.
       nMaxwell( nMaterialProperties > 27 ? static_cast< int >( materialProperties[27] ) : 0 ),

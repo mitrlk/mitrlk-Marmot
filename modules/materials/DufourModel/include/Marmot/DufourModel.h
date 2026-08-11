@@ -97,6 +97,42 @@ namespace Marmot::Materials {
     const double Xt, Xc;
 
     // ------------------------------------------------------------------------------------------
+    // TWO-BRANCH Rice-Tracey weight in the SWDFM driver -- OPTIONAL, the two card entries that
+    // follow the Prony triplets, i.e. [28 + 3 nMaxwell] and [29 + 3 nMaxwell].
+    //
+    //   g(T) = exp( 1.3 T )                                  for T <= swdfmT0
+    //          exp( 1.3 swdfmT0 + swdfmExp2 (T - swdfmT0) )   for T >  swdfmT0
+    //
+    // Continuous at swdfmT0; swdfmT0 <= 0 (or absent) is OFF and reproduces the single-branch
+    // law bit for bit.
+    //
+    // WHY: the required constant cSW was measured on all nine Arcan runs (ledger 23.2) and the
+    // single-branch law with Dufour's published micromechanical 1.3 is systematically LATE at
+    // 0 deg and EARLY at 45 and 90 deg -- nine runs, one direction. The local exponent the data
+    // asks for is 0.93-1.31 over T = 0.07..0.81 (i.e. 1.3 is right there) and 2.7-4.5 above
+    // T ~ 0.8. A mechanism that is absent at low triaxiality and present at high triaxiality is
+    // CAVITATION, and the switch-on window brackets the tension-side closure of the conic yield
+    // cap of ledger 21.4. Keeping 1.3 below the threshold is deliberate: it adds ONE mechanism
+    // and two parameters instead of refitting a constant that already works.
+    //
+    // NOT IDENTIFIABLE SEPARATELY on this dataset: swdfmT0 and swdfmExp2 trade off along a ridge
+    // (0.82/3.5, 0.86/4.0, 0.90/4.5, 0.94/5.0 all score the same). Treat the PAIR as one
+    // calibrated object, and do not quote either number alone as a material property.
+    //
+    // DOUBLE-COUNTING GATE (ledger 21.5 gate 3): this makes the DAMAGE law the owner of the
+    // cavitation mechanism. If a tension-side cap is ever added to the yield surface as well,
+    // one of the two must be removed -- nuP_plus already owns the plastic flow DIRECTION.
+    const double swdfmT0, swdfmExp2;
+
+    /// Read one of the two optional two-branch entries, which sit AFTER the Prony triplets.
+    static double swdfmExtra( const double* materialProperties, int nMaterialProperties, int which )
+    {
+      const int n = nMaterialProperties > 27 ? static_cast< int >( materialProperties[27] ) : 0;
+      const int i = 28 + 3 * ( n > 0 ? n : 0 ) + which;
+      return nMaterialProperties > i ? materialProperties[i] : 0.0;
+    }
+
+    // ------------------------------------------------------------------------------------------
     // Generalized-Maxwell (Prony) VISCOELASTICITY -- optional card entries 28 onwards.
     //
     // After Nguyen, Lani, Pardoen, Morelle & Noels, Int. J. Solids Struct. 96 (2016), Sec. 3.1.3:
@@ -420,7 +456,12 @@ namespace Marmot::Materials {
         // When the driver is already the dilatant plastic volume, the Rice-Tracey factor would
         // DOUBLE-COUNT the pressure sensitivity (exp(1.3T) dAlphaP is itself a void-growth
         // proxy), so it is switched off and the stress-state dependence comes from alphaD alone.
-        double g = volDriver != 0.0 ? 1.0 : exp( swdfmExponent * T ) - exp( -swdfmExponent * T ) / bSW;
+        // Rice-Tracey weight, optionally steepened above swdfmT0 (see the declaration above).
+        const double rt = ( swdfmT0 > 0.0 && T > swdfmT0 )
+                            ? exp( swdfmExponent * swdfmT0 + swdfmExp2 * ( T - swdfmT0 ) )
+                            : exp( swdfmExponent * T );
+
+        double g = volDriver != 0.0 ? 1.0 : rt - exp( -swdfmExponent * T ) / bSW;
         if ( volDriver == 0.0 )
           g *= exp( kSW * ( std::abs( zeta ) - 1.0 ) );
         g = std::max( g, 0.0 ); // damage is irreversible under monotonic loading
@@ -501,9 +542,9 @@ namespace Marmot::Materials {
 
       // ---- the recurrence is driven by the increment since the last CONVERGED increment
       const Tensor33d PK2RefOld( stateVars->PK2Ref );
-      const double    pRefOld     = trace( PK2RefOld ) / 3.0;
-      const Tensor33d dPK2Vol     = ( p0 - pRefOld ) * Spatial3D::I;
-      const Tensor33d dPK2Dev     = PK2Dev_0 - ( PK2RefOld - pRefOld * Spatial3D::I );
+      const double    pRefOld = trace( PK2RefOld ) / 3.0;
+      const Tensor33d dPK2Vol = ( p0 - pRefOld ) * Spatial3D::I;
+      const Tensor33d dPK2Dev = PK2Dev_0 - ( PK2RefOld - pRefOld * Spatial3D::I );
 
       // ---- branch states. The helper writes through its pointer, so an uncommitted evaluation
       //      is given a scratch buffer instead of the persistent state.
@@ -666,9 +707,8 @@ namespace Marmot::Materials {
                                                                                                                  G );
       // Viscoelastic relaxation happens HERE, upstream of the return map, so that the yield
       // function sees the relaxed stress. commit = false: this is called inside the Newton loop.
-      auto [PK2, dPK2_dCe] = applyViscoelasticity( Tensor33d( 2.0 * dPsi_dCe ),
-                                                   Tensor3333d( 2.0 * d2Psi_dCedCe ),
-                                                   false );
+      auto [PK2,
+            dPK2_dCe] = applyViscoelasticity( Tensor33d( 2.0 * dPsi_dCe ), Tensor3333d( 2.0 * d2Psi_dCedCe ), false );
 
       const Tensor33d mandel = Ce % PK2;
       dMandel_dCe            = einsum< Ii, iJKL, to_IJKL >( Ce, dPK2_dCe ) +
@@ -692,9 +732,8 @@ namespace Marmot::Materials {
                                                                                                                  K,
                                                                                                                  G );
 
-      auto [PK2, dPK2_dCe] = applyViscoelasticity( Tensor33d( 2.0 * dPsi_dCe ),
-                                                   Tensor3333d( 2.0 * d2Psi_dCedCe ),
-                                                   false );
+      auto [PK2,
+            dPK2_dCe] = applyViscoelasticity( Tensor33d( 2.0 * dPsi_dCe ), Tensor3333d( 2.0 * d2Psi_dCedCe ), false );
 
       const Tensor33d mandelN = ( Ce % PK2 ) * ( 1.0 - omega );
 
