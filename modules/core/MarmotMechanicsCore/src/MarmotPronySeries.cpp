@@ -40,7 +40,16 @@ namespace Marmot::ContinuumMechanics::Viscoelasticity {
           stiffness += ( eta - eta.cwiseProduct( exp_dt_tau ) ) / dT;
 
           // due to history
-          stress -= Matrix6d( currState - exp_dt_tau.cwiseProduct( currState ) ).colwise().sum();
+          // ROWWISE, not colwise. The state layout written below is
+          //     state(i,j) = eta(i,j) dStrain(j) / dT * ( 1 - exp )   ~   C(i,j) dStrain(j),
+          // so the branch stress component i is the sum over j, i.e. the ROW sum. The column sum
+          // gives sum_i C(i,j) dStrain(j), a different quantity. The two coincide only when the
+          // strain increment is proportional to a single component -- which is the case the unit
+          // test exercises, so this was invisible there. Under general 3D loading the colwise form
+          // over-relaxes: measured on a uniaxial-stress relaxation test it removed 3.67 of branch
+          // stress where only 1.47 existed, driving the stress past equilibrium to ~0 instead of
+          // to Einf/E0 = 0.6557 of the glassy value.
+          stress -= Matrix6d( currState - exp_dt_tau.cwiseProduct( currState ) ).rowwise().sum();
 
           // update state variables only if it is requested
           if ( updateStateVars )
