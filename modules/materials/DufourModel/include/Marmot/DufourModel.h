@@ -97,39 +97,325 @@ namespace Marmot::Materials {
     const double Xt, Xc;
 
     // ------------------------------------------------------------------------------------------
-    // TWO-BRANCH Rice-Tracey weight in the SWDFM driver -- OPTIONAL, the two card entries that
-    // follow the Prony triplets, i.e. [28 + 3 nMaxwell] and [29 + 3 nMaxwell].
+    // CUBIC-EXPONENT Rice-Tracey weight in the SWDFM driver -- OPTIONAL, the three card entries
+    // that follow the Prony triplets, i.e. [28 + 3 nMaxwell] .. [30 + 3 nMaxwell]:
     //
-    //   g(T) = exp( 1.3 T )                                  for T <= swdfmT0
-    //          exp( 1.3 swdfmT0 + swdfmExp2 (T - swdfmT0) )   for T >  swdfmT0
+    //   [28 + 3 nMaxwell]  swdfmC2     coefficient of T^2
+    //   [29 + 3 nMaxwell]  swdfmC3     coefficient of T^3
+    //   [30 + 3 nMaxwell]  swdfmC1     coefficient of T   (0 or absent -> swdfmExponent = 1.3)
     //
-    // Continuous at swdfmT0; swdfmT0 <= 0 (or absent) is OFF and reproduces the single-branch
-    // law bit for bit.
+    //   g(T) = exp( c1 T + c2 T^2 + c3 T^3 ) - exp( -( c1 T + c2 T^2 + c3 T^3 ) ) / bSW
     //
-    // WHY: the required constant cSW was measured on all nine Arcan runs (ledger 23.2) and the
-    // single-branch law with Dufour's published micromechanical 1.3 is systematically LATE at
-    // 0 deg and EARLY at 45 and 90 deg -- nine runs, one direction. The local exponent the data
-    // asks for is 0.93-1.31 over T = 0.07..0.81 (i.e. 1.3 is right there) and 2.7-4.5 above
-    // T ~ 0.8. A mechanism that is absent at low triaxiality and present at high triaxiality is
-    // CAVITATION, and the switch-on window brackets the tension-side closure of the conic yield
-    // cap of ledger 21.4. Keeping 1.3 below the threshold is deliberate: it adds ONE mechanism
-    // and two parameters instead of refitting a constant that already works.
+    // All three zero (or absent) reproduces the published single-branch law exp( 1.3 T ) bit for
+    // bit, so every deck that does not carry the tail is unaffected.
     //
-    // NOT IDENTIFIABLE SEPARATELY on this dataset: swdfmT0 and swdfmExp2 trade off along a ridge
-    // (0.82/3.5, 0.86/4.0, 0.90/4.5, 0.94/5.0 all score the same). Treat the PAIR as one
-    // calibrated object, and do not quote either number alone as a material property.
+    // CALIBRATED VALUE (HANDOFF S8.4, `calibration/refit_g.py`, no FE required):
+    //
+    //   g(T) = exp( 3.75 T - 5.75 T^2 + 3.50 T^3 ),  cSW = 1.797
+    //
+    // i.e. c1 = 3.75, c2 = -5.75, c3 = 3.50. Monotone increasing over T = 0..1.3 (verified
+    // numerically; min slope 1.5e-3), so it is admissible as a void-growth weight.
+    //
+    // WHY THIS REPLACED THE TWO-BRANCH KINK. The required constant cSW was measured on all nine
+    // Arcan runs plus the single-lap joint (ten runs). g must go as 1/kappa_bar_f: 2.05 at
+    // T = 0.07, 4.65 at 0.81, 12.39 at 1.08, i.e. a local exponent of 1.12 below T ~ 0.8 and 3.51
+    // above it. The superseded two-branch law reproduced that with a KINK at swdfmT0 = 0.88 --
+    // and the SLJ's damage-critical element sits at T ~ 0.59, so 0 % of its driver accumulated
+    // above the threshold and the whole term did nothing for the one specimen that was not in the
+    // fit (HANDOFF S7.2). One smooth rising exponent does the same job everywhere and needs no
+    // threshold. Measured spread of the required cSW over all ten runs: 2.42x -> 1.85x, against a
+    // within-angle rate-scatter floor of 1.18-1.37x. The SLJ then requires 2.53, the same as
+    // Arcan 0 deg, and is no longer the outlier.
     //
     // DOUBLE-COUNTING GATE (ledger 21.5 gate 3): this makes the DAMAGE law the owner of the
     // cavitation mechanism. If a tension-side cap is ever added to the yield surface as well,
     // one of the two must be removed -- nuP_plus already owns the plastic flow DIRECTION.
-    const double swdfmT0, swdfmExp2;
+    const double swdfmC2, swdfmC3, swdfmC1;
 
-    /// Read one of the two optional two-branch entries, which sit AFTER the Prony triplets.
+    // ------------------------------------------------------------------------------------------
+    // MONOTONE-BY-CONSTRUCTION exponent + RATE-DEPENDENT T-SENSITIVITY -- OPTIONAL, the five card
+    // entries after the cubic ones, i.e. [31 + 3 nMaxwell] .. [35 + 3 nMaxwell]:
+    //
+    //   [31 + 3 nMaxwell]  swdfmB0 |  E'(T) = ( b0 + b1 T + b2 T^2 )^2, so E is non-decreasing
+    //   [32 + 3 nMaxwell]  swdfmB1 |  for ANY parameter values -- monotonicity is structural, not
+    //   [33 + 3 nMaxwell]  swdfmB2 |  a fitted accident. All three zero -> use the cubic above.
+    //   [34 + 3 nMaxwell]  swdfmKdotRef   reference rate [1/s]; 0 (or absent) -> NO rate term
+    //   [35 + 3 nMaxwell]  swdfmS         rate exponent; NEGATIVE -> tie it to n (see below)
+    //
+    //   g(T, kdot) = exp( E(T) * w ),    w = ( kdot / swdfmKdotRef )^( -s )
+    //   E(T) = b0^2 T + b0 b1 T^2 + (b1^2 + 2 b0 b2)/3 T^3 + (b1 b2)/2 T^4 + (b2^2)/5 T^5
+    //
+    // with kdot = d alphaPBar / dt, the rate at which the driver itself accumulates. w > 0 always,
+    // so g stays non-decreasing in T at EVERY rate.
+    //
+    // CALIBRATED (HANDOFF S9.10, ten runs: 9 Arcan + the single-lap joint):
+    //   ( b0, b1, b2 ) = ( 1.798, -0.702, -3.172 ),  swdfmKdotRef = 20,  swdfmS < 0,  cSW = 2.006
+    // Spread of the required constant: 2.42x (published) -> 1.85x (cubic) -> 1.43x, against a floor
+    // of 1.18-1.37x set by the within-angle scatter across rates, which is experimental.
+    //
+    // WHY swdfmS < 0 MEANS "USE n". The freely fitted rate exponent is 0.0502; the model's own
+    // VISCOPLASTIC exponent n, identified by Dufour from three loading rates, is 0.0435. Fixing s
+    // to n costs 0.01x of spread (1.43x against 1.42x). So the rate dependence of FAILURE is the
+    // rate dependence the FLOW RULE already has, and it costs NO new parameter. Encoding it as a
+    // sentinel rather than as a repeated literal keeps the two tied if n is ever recalibrated.
+    //
+    // RATE FLOOR. On an elastic increment d alphaPBar = 0, so kdot = 0 and w would be infinite;
+    // the increment contributes nothing to D, but 0 * inf is NaN, so kdot is floored at
+    // swdfmKdotMin. The floor also bounds w: at 1e-8 /s against a reference of 20 it gives
+    // w <= 2.5, and the slowest real run (the SLJ at 1 mm/min) sits at 1e-3 /s, five decades above.
+    //
+    // MEASURED SPAN, so it is clear this is not a lever on one specimen: w = 1.535 / 1.105 / 1.000
+    // / 0.905 at the SLJ / 1 / 10 / 100 mm/s -- a factor 1.7 across FOUR decades. A rejected
+    // candidate with a log^2 rate factor scored better but applied x3.53 to the SLJ alone and
+    // x1.07 to all nine Arcan runs (ledger 25.10); that is why the form here acts on the
+    // T-SENSITIVITY and not as a common factor.
+    //
+    // DO NOT EXTRAPOLATE IN T. g = 1.00 / 1.77 / 2.48 / 2.72 / 2.80 / 4.30 / 22.0 at
+    // T = 0 / 0.2 / ... / 1.2 while the data reaches only T = 1.09 (Arcan 0 deg). The quintic rises
+    // very steeply past that; cap it before using this card on a new geometry.
+    const double swdfmB0, swdfmB1, swdfmB2, swdfmKdotRef, swdfmS;
+
+    // ------------------------------------------------------------------------------------------
+    // QUARTIC term and the EXTRAPOLATION CAP -- OPTIONAL, entries [37 + 3 nMaxwell] and
+    // [38 + 3 nMaxwell]:
+    //
+    //   [37 + 3 nMaxwell]  swdfmC4    coefficient of T^4 in the cubic-form exponent
+    //   [38 + 3 nMaxwell]  swdfmTCap  triaxiality above which g is HELD CONSTANT; 0 -> no cap
+    //
+    //   E(T) = c1 T + c2 T^2 + c3 T^3 + c4 T^4 ,   evaluated at min(T, swdfmTCap)
+    //
+    // WHY THE QUARTIC. The required weight is NON-MONOTONE (ledger 28.2): at the cSW that Arcan
+    // 90 deg pins (1.88, because 90 deg sits at T ~ 0 where g == 1) the four specimens demand
+    // g(0) = 1.01, g(0.584) = 3.38 (SLJ), g(0.806) = 2.62 (Arcan 45 deg), g(1.087) = 5.66 (0 deg).
+    // g must PEAK near T ~ 0.6 and DIP by T ~ 0.85. A cubic cannot hold that and still rise steeply
+    // afterwards; the calibrated quartic
+    //
+    //   E(T) = -0.07 T + 18.12 T^2 - 35.58 T^3 + 18.85 T^4 ,   cSW = 1.754
+    //
+    // turns at T = 0.559 and 0.854 -- essentially exactly the SLJ's hot element and Arcan 45 deg --
+    // and collapses the four SPECIMEN medians to 1.11x, below the 1.18-1.37x rate-scatter floor.
+    // The physical reading is cavitation of the rubber phase: it needs hydrostatic tension to switch
+    // on but is suppressed again at high constraint, so it has a WINDOW, superposed on Rice-Tracey
+    // void growth at high T. Monotone forms are structurally incapable and were the reason nothing
+    // worked; the monotonicity rule of ledger 25.6 was itself the error.
+    //
+    // WHY THE CAP IS NOT OPTIONAL IN PRACTICE. g is constrained by data at FOUR triaxialities only
+    // (0, 0.584, 0.806, 1.087). Beyond the last one the quartic explodes:
+    //   g(1.087) = 7.0   g(1.15) = 15.5   g(1.20) = 37.1   g(1.30) = 493   g(1.50) = 9.0e6
+    // A thin adhesive layer between stiff substrates in pure tension -- a BUTT JOINT -- approaches
+    // hydrostatic tension and sits well above T = 1.1. Uncapped, this card would give such a
+    // geometry a damage rate thousands of times too high and fail it at first load. With
+    // swdfmTCap = 1.10 the model instead HOLDS the last value it has evidence for, which is a
+    // statement about the calibration range rather than an invented trend.
+    const double swdfmC4, swdfmTCap;
+
+    // ------------------------------------------------------------------------------------------
+    // Ds_inf -- the SATURATION VALUE of the softening variable. OPTIONAL, the entry after the
+    // shape/rate block, i.e. [36 + 3 nMaxwell]. 0 or absent -> 1.0, the previous behaviour.
+    //
+    //   omega_s = Ds_inf * ( 1 - exp( -kappa_bar / epsF ) )
+    //
+    // WHY THIS EXISTS. The two-variable structure is Nguyen, Lani, Pardoen, Morelle & Noels,
+    // Int. J. Solids Struct. 96 (2016) 192-216, eq. (79)-(81):
+    //
+    //   Ds = Ds_inf [ 1 - exp( -Hs/(zeta_s+1) (chi_s - chi_s0)^(zeta_s+1) ) ]
+    //
+    // and the paper is explicit about what Ds_inf is FOR: "When Ds reaches its saturation value,
+    // the rehardening stage sets in since the hardening of the undamaged part is still developing.
+    // As a result, THE EVOLUTION OF Ds DOES NOT LEAD TO THE MATERIAL FAILURE." Ds is bounded bulk
+    // softening (shear transformation zones); only Df, the failure variable, may reach 1.
+    //
+    // This implementation had Ds_inf = 1, chi_s0 = 0, zeta_s = 0 -- i.e. THREE of Nguyen's four
+    // features off, and the important one missing: omega_s could grow to 1 and fail the material by
+    // itself, which the source formulation forbids.
+    //
+    // WHAT IT EXPLAINS. omega_s at each specimen's measured failure point, on kappa_bar_f from
+    // ledger 23.2: 0 deg 5 %, 45 deg 11 %, SLJ 8 %, **90 deg 26 %**, because kappa_bar_f spans 7.7x
+    // (0.094 to 0.528). So at 90 deg a quarter of the degradation at failure is the UNBOUNDED
+    // softening variable, which is gradual by construction -- 90 deg does not fracture in this
+    // model, it creeps down through omega_s. That is the 0-vs-90 deg asymmetry that no amount of
+    // g(T), cSW, dF, ld or epsF tuning could reach, because the wrong variable was doing the work.
+    //
+    // COUPLING TO WATCH. omega_s is what balances the b5 rehardening to produce the Arcan force
+    // PLATEAU. Bounding it makes the plateau RISE, so Ds_inf and b5 are not independent: judge a
+    // Ds_inf run on whether the DROP becomes sharp and early, then compensate the plateau with b5.
+    //
+    // epsF IS NOT AFFECTED and must stay at 1.75: Dufour fitted it by least squares on the
+    // experimental DIC D-vs-kappa cloud (thesis Fig. 2.11a / IJAA 2016 Fig. 10), a material-point
+    // measurement. Ds_inf is a separate parameter of the same source formulation, not a refit of his.
+    //
+    // NOTE FOR POST-PROCESSING: the kappa_bar recovery used by `band_width.py` becomes
+    // kappa_bar = -epsF ln( 1 - omega_s/Ds_inf ), not -epsF ln( 1 - omega_s ).
+    const double dsInf;
+
+    /// Saturation value actually used; 0 or absent means "no saturation", i.e. the previous 1.0.
+    double dsInfEff() const { return dsInf > 0.0 ? dsInf : 1.0; }
+
+    // SOFTENING TAIL ACCELERATION -- optional card entry, `which` = 11 (index 60 with 7 Prony terms).
+    //
+    //   omega_s = Ds_inf * [ 1 - exp( -x - swdfmBeta x^2 ) ],   x = kappa_bar / epsF
+    //
+    // swdfmBeta = 0 reproduces the previous law BIT FOR BIT.
+    //
+    // WHY. The card's fracture energy was MEASURED at Gf = 2.890 N/mm (ledger 29.24; validated to
+    // within 1.4% of the TDCB value 2.93, which was never used in the calibration), while the joint
+    // needs 0.65 (Dufour's own SLJ inverse fit) or 0.42 (the low-epsF card that matched the SLJ).
+    // Gf ~ ld * int( 1 - omega_s ) dkappa_bar, and for the plain exponential that integral is
+    // epsF = 1.75 with almost all of it in a tail extending to infinity. The quadratic term
+    // accelerates the approach to Ds_inf and cuts that area; beta is set from the MEASURED Gf.
+    //
+    // WHY THIS FORM AND NOT THE OBVIOUS ALTERNATIVES (all three were tried and rejected -- 29.30):
+    //   * lowering epsF steepens the softening from the FIRST increment, which drops the Arcan peak
+    //     forces (epsF 0.9 gave a 90 deg peak at 0.23 of measured). Rejected.
+    //   * renormalising a truncated exponential by Z = 1-exp(-cut/epsF) multiplies the INITIAL SLOPE
+    //     by 1/Z (2.58 at Gf 0.65), i.e. it is epsF = 0.678 in disguise -- the same rejected change
+    //     wearing a different name. Rejected.
+    //   * a HARD cutoff ( omega_s jumps to 1 at kappa_c ) preserves the slope but adds a SECOND
+    //     failure criterion, and it was measured to PRE-EMPT the SWDFM driver in all 700 cells of the
+    //     Arcan 90 deg specimen (which reaches kappa_bar = 0.559 before D = 1, against 0.10-0.20 for
+    //     every other specimen). It would also impose a 78% instantaneous stress drop. Rejected.
+    // This form has NONE of those defects: d omega_s / d kappa_bar at kappa_bar = 0 is exactly
+    // 1/epsF for ANY beta (the linear term alone survives), so epsF keeps the meaning Dufour fitted
+    // it with; it is smooth, so there is no cliff; and omega_s only ASYMPTOTES to Ds_inf, so no
+    // second failure criterion is introduced and nothing can pre-empt the driver.
+    //
+    // KNOWN COST, measured before implementing: the Arcan 90 deg specimen accumulates kappa_bar =
+    // 0.559 before D = 1 while everything else initiates at 0.10-0.20, so it absorbs ~5x more of any
+    // tail change than the SLJ does (ledger 29.31). Expect its damage state at failure to move a
+    // lot; cSW does NOT compensate (it acts on D, not on omega_s).
+    const double swdfmBeta;
+    // LOCALIZING GRADIENT DAMAGE -- optional card entries, `which` = 12 (R) and 13 (eta).
+    //
+    // Poh & Sun, "Localizing gradient damage model with decreasing interactions", IJNME 110(6):
+    // 503-522, 2017. The conventional operator  ld^2 grad^2 kappa_bar  becomes
+    //     g( omega_f ) * ld^2 grad^2 kappa_bar,
+    // and since the element consumes a LENGTH and squares it (l*l in the residual and k_AA), this is
+    // implemented as  nonlocalradius = ld * sqrt( g ).
+    //
+    //     g( w ) = [ ( 1 - R ) exp( -eta w ) + R - exp( -eta ) ] / [ 1 - exp( -eta ) ]
+    //     g( 0 ) = 1 exactly,  g( 1 ) = R exactly,  eta sets the steepness.
+    //
+    // WHY. Constant interactions let a failing band keep transferring energy into neighbours that
+    // must then be dragged through their own softening -- the "spurious damage growth" of Geers et
+    // al. 1998 / Simone et al. 2004. That is measured here: the omega 0.9 -> 0.1 transition on the
+    // SLJ is 1.0 mm at the force peak and 3.5 mm after it, against ld = 0.12 (ledger step-zero), and
+    // the model's fracture energy is the BULK value 2.890 N/mm where the joint needs 0.42-0.65
+    // (ledger 29.24). A forming crack should stop interacting with its surroundings; this one never
+    // does, so it pays bulk toughness forever.
+    //
+    // WHY GATED ON omega_f AND NOT omega. Measured fraction of cells past D = 1, i.e. with omega_f
+    // active: at the Arcan PEAKS 0.0% / 0.0% / 1.1% (0/45/90 deg), so g == 1 there and the
+    // calibrated peak forces cannot move. NOTE HOWEVER, and this is not what the proposal assumed:
+    // at the Arcan -10% CROSSINGS -- which IS the calibration metric -- the fractions are
+    // 35.6% / 81.4% / 32.6%. The gate therefore DOES fire inside the constrained data, the crossings
+    // will move EARLIER (collapsing ld raises kappa_bar toward the local value, since
+    // alphaP_nonlocal/alphaP_local is 0.38-0.69 in the Arcan), and the hard-gate bound on the
+    // ratios is ~0.92/0.89/0.82. R is the trade parameter, and 45 deg is the exposed angle, not
+    // 90 deg. Acceptance test: 45 deg >= 0.90 and all three within 5% of 0.99/0.95/1.00.
+    //
+    // LAGGED BY ONE INCREMENT: g is evaluated on the STORED driver (D_old), so l is constant within
+    // the increment and the existing tangent stays exact -- no dl/dA terms. Defensible as a probe
+    // because the arc-length solve already takes small increments.
+    //
+    // R = 0 or absent -> g == 1 identically -> previous behaviour, bit for bit.
+    // Keep R well above 0 on a first pass: g -> 0 exactly is the known regularisation-loss critique
+    // of localizing models, so the mesh-refinement protocol must be re-run once the band collapses.
+    const double swdfmLocR, swdfmLocEta;
+
+    /// True when the localizing interaction is switched on.
+    bool localizingOn() const { return swdfmLocR > 0.0; }
+
+    /** Poh & Sun interaction function. g(0) = 1, g(1) = swdfmLocR, monotonically decreasing. */
+    double interactionG( const double omega_f ) const
+    {
+      if ( !localizingOn() )
+        return 1.0;
+      const double eta = swdfmLocEta > 0.0 ? swdfmLocEta : 5.0;
+      const double e   = std::exp( -eta );
+      const double w   = std::min( std::max( omega_f, 0.0 ), 1.0 );
+      return ( ( 1.0 - swdfmLocR ) * std::exp( -eta * w ) + swdfmLocR - e ) / ( 1.0 - e );
+    }
+
+    /** omega_f from the driver. ONE definition, used both by computeOmega and by the lagged
+     *  interaction gate, so the two cannot drift apart. */
+    double omegaFOfDriver( const double D ) const { return D > 1.0 ? 1.0 - std::exp( -( D - 1.0 ) / dF ) : 0.0; }
+
+    /** Softening variable and its derivative w.r.t. the (weighted) driving strain.
+     *
+     * ONE function so the law, its derivative and the tests cannot drift apart.
+     *   omega_s = Ds_inf ( 1 - E ),  E = exp( -x - beta x^2 ),  x = kappa_bar / epsF
+     *   d omega_s / d kappa_bar = Ds_inf E ( 1 + 2 beta x ) / epsF
+     * At x = 0 that is Ds_inf / epsF for every beta -- the property the whole choice rests on.
+     */
+    void softening( const double kbar, double& omega_s, double& dOmega_s ) const
+    {
+      const double ds = dsInfEff();
+      const double x  = kbar / epsF;
+      const double E  = std::exp( -x - swdfmBeta * x * x );
+      omega_s         = ds * ( 1.0 - E );
+      dOmega_s        = ds * E * ( 1.0 + 2.0 * swdfmBeta * x ) / epsF;
+    }
+
+    inline const static double swdfmKdotMin = 1e-8;
+
+    /// Read one of the optional shape entries, which sit AFTER the Prony triplets.
     static double swdfmExtra( const double* materialProperties, int nMaterialProperties, int which )
     {
       const int n = nMaterialProperties > 27 ? static_cast< int >( materialProperties[27] ) : 0;
       const int i = 28 + 3 * ( n > 0 ? n : 0 ) + which;
       return nMaterialProperties > i ? materialProperties[i] : 0.0;
+    }
+
+    /// True when the card carries the monotone-by-construction quintic instead of the cubic.
+    bool swdfmMonotoneForm() const { return swdfmB0 != 0.0 || swdfmB1 != 0.0 || swdfmB2 != 0.0; }
+
+    /** Exponent of the Rice-Tracey weight, including the rate factor.
+     *
+     * Kept as ONE function so that g, its unit tests and its documentation cannot drift apart, and
+     * so that the fallbacks (c1 = swdfmExponent, s = n) each live in exactly one place.
+     *
+     * @param T     stress triaxiality, already clamped by the caller
+     * @param kdot  d alphaPBar / dt of THIS increment; floored internally
+     */
+    double swdfmLogG( const double T, const double kdot = 0.0 ) const
+    {
+      // COMPRESSION BRANCH. A single polynomial cannot behave on both sides of T = 0: for T < 0 the
+      // even powers stay positive while the odd ones flip, so the calibrated tension coefficients give
+      // g(-0.29) = 16.6 -- damage 17x FASTER in compression than in pure shear. That destroyed Arcan
+      // 90 deg (its field spans T = -0.292 .. +0.002, median -0.003) and the SLJ (median cell at
+      // T = -0.044). Ledger 28.6. So compression gets its own decaying branch, using the published
+      // Rice-Tracey exponent and NO new parameter:
+      //
+      //     T <= 0 :  E = swdfmExponent * T        ( = 1.3 T, so g < 1 and falling )
+      //
+      // Continuous at T = 0 with g(0) = 1 either way, which is what lets Arcan 90 deg -- the only
+      // specimen sitting at T ~ 0, with its driver uniform to max/median = 1.0 -- set the drive scale.
+      // Applies to BOTH exponent forms; a purely monotone card is unaffected because its own value at
+      // T < 0 is already below 1.
+      if ( T <= 0.0 )
+        return swdfmExponent * T;
+
+      // CAP: above the calibrated range the weight is held at its last evidenced value.
+      const double Tc = swdfmTCap > 0.0 ? std::min( T, swdfmTCap ) : T;
+
+      double E;
+      if ( swdfmMonotoneForm() ) {
+        // E(T) = INT_0^T ( b0 + b1 s + b2 s^2 )^2 ds, expanded
+        const double b0 = swdfmB0, b1 = swdfmB1, b2 = swdfmB2;
+        E = ( ( ( ( b2 * b2 / 5.0 ) * Tc + b1 * b2 / 2.0 ) * Tc + ( b1 * b1 + 2.0 * b0 * b2 ) / 3.0 ) * Tc + b0 * b1 ) *
+              Tc * Tc +
+            b0 * b0 * Tc;
+      }
+      else {
+        const double c1 = swdfmC1 != 0.0 ? swdfmC1 : swdfmExponent;
+        E               = ( ( ( swdfmC4 * Tc + swdfmC3 ) * Tc + swdfmC2 ) * Tc + c1 ) * Tc;
+      }
+
+      if ( swdfmKdotRef > 0.0 ) {
+        const double s = swdfmS < 0.0 ? n : swdfmS; // sentinel: tie the rate exponent to n
+        E *= std::pow( std::max( kdot, swdfmKdotMin ) / swdfmKdotRef, -s );
+      }
+      return E;
     }
 
     // ------------------------------------------------------------------------------------------
@@ -405,8 +691,12 @@ namespace Marmot::Materials {
       // ---- (1) SOFTENING variable: the original law, ALWAYS active and already calibrated.
       //          This is what reproduces the pre-peak response; removing it before initiation
       //          would lose the calibrated peak forces.
-      const double omega_s  = 1.0 - exp( -alphaP_weighted / epsF );
-      const double dOmega_s = exp( -alphaP_weighted / epsF ) / epsF;
+      //          Ds_inf BOUNDS it (see the declaration): Nguyen's Ds saturates and CANNOT fail the
+      //          material; only the failure variable may. Ds_inf = 1 is the previous behaviour.
+      //          The tail may be TRUNCATED (epsFCut > 0): see the declaration of epsFCut. Both the
+      //          value and the derivative come from softening() so they cannot disagree.
+      double omega_s, dOmega_s;
+      softening( alphaP_weighted, omega_s, dOmega_s );
 
       // ---- (2) FAILURE variable: zero until the SWDFM driver reaches D = 1, then steep.
       //          Two-variable structure after Nguyen, Lani, Pardoen, Morelle & Noels,
@@ -456,18 +746,21 @@ namespace Marmot::Materials {
         // When the driver is already the dilatant plastic volume, the Rice-Tracey factor would
         // DOUBLE-COUNT the pressure sensitivity (exp(1.3T) dAlphaP is itself a void-growth
         // proxy), so it is switched off and the stress-state dependence comes from alphaD alone.
-        // Rice-Tracey weight, optionally steepened above swdfmT0 (see the declaration above).
-        const double rt = ( swdfmT0 > 0.0 && T > swdfmT0 )
-                            ? exp( swdfmExponent * swdfmT0 + swdfmExp2 * ( T - swdfmT0 ) )
-                            : exp( swdfmExponent * T );
+        // The driver increment is needed BEFORE g, because g may depend on the RATE at which the
+        // driver accumulates (see swdfmLogG). dTCurrent is set at the top of computeStress.
+        const double dAlphaPBar = std::max( alphaP_weighted - alphaPBar_old, 0.0 );
+        const double kdot       = dTCurrent > 0.0 ? dAlphaPBar / dTCurrent : 0.0;
 
-        double g = volDriver != 0.0 ? 1.0 : rt - exp( -swdfmExponent * T ) / bSW;
+        // Rice-Tracey weight with the exponent E(T) * w(kdot) (see the declaration above); the
+        // compression term keeps its mirrored form exp(-E)/bSW.
+        const double logG = swdfmLogG( T, kdot );
+
+        double g = volDriver != 0.0 ? 1.0 : exp( logG ) - exp( -logG ) / bSW;
         if ( volDriver == 0.0 )
           g *= exp( kSW * ( std::abs( zeta ) - 1.0 ) );
         g = std::max( g, 0.0 ); // damage is irreversible under monotonic loading
 
-        const double dAlphaPBar = std::max( alphaP_weighted - alphaPBar_old, 0.0 );
-        D                       = D_old + cSW * g * dAlphaPBar;
+        D = D_old + cSW * g * dAlphaPBar;
 
         if ( D > 1.0 ) {
           omega_f  = 1.0 - exp( -( D - 1.0 ) / dF );
@@ -478,8 +771,11 @@ namespace Marmot::Materials {
       const double omega                   = 1.0 - ( 1.0 - omega_s ) * ( 1.0 - omega_f );
       const double dOmega_dAlphaP_weigthed = ( 1.0 - omega_f ) * dOmega_s + ( 1.0 - omega_s ) * dOmega_f;
 
-      // T and zeta are held fixed in the tangent (the dOmega/dT * dT/dTau contribution is
-      // deliberately omitted), so the structure of the tangent is unchanged.
+      // T, zeta AND the rate factor w are held fixed in the tangent (the dOmega/dT * dT/dTau and
+      // dOmega/dw * dw/dAlphaPBar contributions are deliberately omitted), so the structure of the
+      // tangent is unchanged. Omitting w is the same approximation already made for T and zeta and
+      // is mild for the same reason: w varies by a factor 1.7 over four decades of rate, so its
+      // derivative is small next to dOmega/dAlphaPBar itself.
       const double dOmega_dAlphaP_local    = dOmega_dAlphaP_weigthed * dAlphaP_weighted_dAlphaP_local;
       const double dOmega_dAlphaP_nonlocal = dOmega_dAlphaP_weigthed * dAlphaP_weighted_dAlphaP_nonlocal;
 

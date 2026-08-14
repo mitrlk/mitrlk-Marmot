@@ -44,9 +44,27 @@ namespace Marmot::Materials {
       volDriver( nMaterialProperties > 24 ? materialProperties[24] : 0.0 ),
       Xt( nMaterialProperties > 25 ? materialProperties[25] : 0.0 ),
       Xc( nMaterialProperties > 26 ? materialProperties[26] : 0.0 ),
-      // two-branch Rice-Tracey weight: the two entries AFTER the Prony triplets. Absent -> 0 -> off.
-      swdfmT0( swdfmExtra( materialProperties, nMaterialProperties, 0 ) ),
-      swdfmExp2( swdfmExtra( materialProperties, nMaterialProperties, 1 ) ),
+      // cubic-exponent Rice-Tracey weight: the three entries AFTER the Prony triplets, in the
+      // order (T^2, T^3, T). All absent -> 0 -> the published single-branch exp( 1.3 T ).
+      swdfmC2( swdfmExtra( materialProperties, nMaterialProperties, 0 ) ),
+      swdfmC3( swdfmExtra( materialProperties, nMaterialProperties, 1 ) ),
+      swdfmC1( swdfmExtra( materialProperties, nMaterialProperties, 2 ) ),
+      // monotone-by-construction exponent + rate-dependent T-sensitivity; all absent -> the cubic
+      swdfmB0( swdfmExtra( materialProperties, nMaterialProperties, 3 ) ),
+      swdfmB1( swdfmExtra( materialProperties, nMaterialProperties, 4 ) ),
+      swdfmB2( swdfmExtra( materialProperties, nMaterialProperties, 5 ) ),
+      swdfmKdotRef( swdfmExtra( materialProperties, nMaterialProperties, 6 ) ),
+      swdfmS( swdfmExtra( materialProperties, nMaterialProperties, 7 ) ),
+      // saturation value of the SOFTENING variable (Nguyen's Ds_inf); 0/absent -> 1.0
+      dsInf( swdfmExtra( materialProperties, nMaterialProperties, 8 ) ),
+      // quartic term of the exponent, and the triaxiality above which g is held constant
+      swdfmC4( swdfmExtra( materialProperties, nMaterialProperties, 9 ) ),
+      swdfmTCap( swdfmExtra( materialProperties, nMaterialProperties, 10 ) ),
+      // quadratic acceleration of the softening tail; 0/absent -> the plain exponential
+      swdfmBeta( swdfmExtra( materialProperties, nMaterialProperties, 11 ) ),
+      // localizing gradient damage: floor R of the interaction function, and its steepness eta
+      swdfmLocR( swdfmExtra( materialProperties, nMaterialProperties, 12 ) ),
+      swdfmLocEta( swdfmExtra( materialProperties, nMaterialProperties, 13 ) ),
       // optional generalized-Maxwell entries from 27 on; absent or nMaxwell = 0 reproduces the
       // purely hyperelastic-viscoplastic model exactly.
       nMaxwell( nMaterialProperties > 27 ? static_cast< int >( materialProperties[27] ) : 0 ),
@@ -56,6 +74,76 @@ namespace Marmot::Materials {
     if ( maxwellDev.sumGamma >= 1.0 || maxwellVol.sumGamma >= 1.0 )
       throw std::invalid_argument( "DufourModel: the sum of the Maxwell relative moduli must stay below 1, "
                                    "otherwise the equilibrium branch has non-positive stiffness" );
+
+    // LOCALIZING-INTERACTION GATE. R is a FRACTION of ld^2, so it must lie in (0,1]; R > 1 would
+    // GROW the interaction with damage, and R < 0 is meaningless. R exactly 0 collapses the operator
+    // completely and destroys regularisation, which is the standard critique of localizing models --
+    // refuse it and require a positive floor.
+    if ( swdfmLocR < 0.0 || swdfmLocR > 1.0 )
+      throw std::invalid_argument( "DufourModel: the localizing interaction floor R must lie in "
+                                   "[0,1] ( 0 or absent = constant interactions, i.e. the "
+                                   "conventional gradient model ); R > 1 would make interactions "
+                                   "GROW with damage" );
+    if ( swdfmLocEta < 0.0 )
+      throw std::invalid_argument( "DufourModel: the localizing interaction steepness eta must be "
+                                   "positive ( 0 or absent -> default 5 )" );
+
+    // SOFTENING-ACCELERATION GATE. beta only enters through x = kappa_bar/epsF, so it is
+    // dimensionless and a negative value would make omega_s NON-MONOTONE (damage healing) and
+    // eventually drive it below zero. Refuse it.
+    if ( swdfmBeta < 0.0 )
+      throw std::invalid_argument( "DufourModel: swdfmBeta must be >= 0 ( 0 or absent = the plain "
+                                   "exponential softening tail ); a negative value makes omega_s "
+                                   "non-monotone, i.e. damage would HEAL" );
+
+    // LEGACY-DECK GATE. The two entries after the Prony triplets used to be the two-branch
+    // ( swdfmT0, swdfmExp2 ) pair; they are now ( swdfmC2, swdfmC3 ) of the cubic exponent. A deck
+    // written for the old law carries e.g. ( 0.88, 4.10 ) and NO third entry, which the new law
+    // would read as a perfectly valid but completely different g(T) -- a silent misinterpretation
+    // of exactly the kind that has cost this project results before. Refuse it instead: any deck
+    // that shapes g at all must state the linear coefficient explicitly.
+    if ( ( swdfmC2 != 0.0 || swdfmC3 != 0.0 ) && swdfmC1 == 0.0 )
+      throw std::invalid_argument(
+        "DufourModel: the card shapes the Rice-Tracey weight (entries [28+3 nMaxwell] and "
+        "[29+3 nMaxwell] are nonzero) but gives no linear coefficient at [30+3 nMaxwell]. This is "
+        "the signature of a deck written for the SUPERSEDED two-branch ( swdfmT0, swdfmExp2 ) law, "
+        "which would be silently re-read as the cubic ( swdfmC2, swdfmC3 ). Regenerate the deck "
+        "with the cubic exponent ( c1, c2, c3 ) = ( 3.75, -5.75, 3.50 ), i.e. entries "
+        "( c2, c3, c1 ) = ( -5.75, 3.50, 3.75 ) -- see DufourModel.h and HANDOFF S8.4." );
+
+    // A rate exponent without a reference rate is silently inert -- w would never be applied -- so
+    // it is far more likely to be a card written wrong than a deliberate choice.
+    if ( swdfmS != 0.0 && swdfmKdotRef <= 0.0 )
+      throw std::invalid_argument( "DufourModel: a SWDFM rate exponent was given at "
+                                   "[35 + 3 nMaxwell] but the reference rate at [34 + 3 nMaxwell] "
+                                   "is zero or absent, which switches the rate term OFF. Set the "
+                                   "reference rate (calibrated: 20 /s) or clear the exponent." );
+
+    // Both exponent forms at once is ambiguous: swdfmMonotoneForm() silently wins and the cubic
+    // entries are ignored, which reads as a card that does something it does not.
+    if ( swdfmMonotoneForm() && ( swdfmC1 != 0.0 || swdfmC2 != 0.0 || swdfmC3 != 0.0 ) )
+      throw std::invalid_argument( "DufourModel: the card carries BOTH the cubic exponent "
+                                   "( c1, c2, c3 ) and the monotone quintic ( b0, b1, b2 ). They are "
+                                   "alternatives, not a sum -- clear one of the two." );
+
+    // A quartic exponent WITHOUT a cap is the butt-joint trap: g(1.5) = 9e6 on the calibrated
+    // coefficients, so any geometry reaching a triaxiality above the calibration range fails at
+    // first load. Refuse it rather than let it happen silently.
+    if ( swdfmC4 != 0.0 && swdfmTCap <= 0.0 )
+      throw std::invalid_argument( "DufourModel: a quartic exponent coefficient was given at "
+                                   "[37 + 3 nMaxwell] but no extrapolation cap at [38 + 3 nMaxwell]. "
+                                   "g is calibrated only up to T = 1.087 and the quartic explodes "
+                                   "beyond it (g = 493 at T = 1.3, 9e6 at 1.5). Set the cap "
+                                   "(calibrated: 1.10)." );
+
+    // Ds_inf above 1 would let the softening variable exceed full degradation on its own, which is
+    // exactly what the saturation is there to prevent.
+    if ( dsInf > 1.0 )
+      throw std::invalid_argument( "DufourModel: Ds_inf (entry [36 + 3 nMaxwell]) must lie in (0, 1]. "
+                                   "It is the SATURATION value of the softening variable; above 1 the "
+                                   "bulk softening could fail the material by itself, which Nguyen's "
+                                   "formulation forbids. Use 0 or omit for the unsaturated legacy "
+                                   "behaviour." );
   }
 
   void DufourModel::computeStress( ConstitutiveResponse< 3 >& response,
@@ -79,7 +167,11 @@ namespace Marmot::Materials {
     double&         chiF         = stateVars->chiF;
     const double    chiFOld      = chiF;
 
-    response.nonlocalradius = ld;
+    // LOCALIZING GRADIENT DAMAGE (Poh & Sun 2017): the interaction length COLLAPSES in material
+    // that has already started to fail, so a forming crack stops transferring energy into its
+    // neighbours. Gated on the STORED driver (lagged one increment) so l is constant within the
+    // increment and the element tangent stays exact. R = 0 / absent -> g == 1 -> unchanged.
+    response.nonlocalradius = ld * std::sqrt( interactionG( omegaFOfDriver( driverOld ) ) );
     double alphaP_nonlocal  = deformation.A;
 
     // Published to the Maxwell update, which is reached through computeMandelStress from inside
