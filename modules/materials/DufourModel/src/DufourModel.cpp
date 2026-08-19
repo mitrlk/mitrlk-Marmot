@@ -4,6 +4,7 @@
 #include "Marmot/MarmotFastorTensorBasics.h"
 #include "Marmot/MarmotMaterialGradientEnhancedFiniteStrain.h"
 #include "Marmot/MarmotStressMeasures.h"
+#include <cmath>
 
 namespace Marmot::Materials {
 
@@ -39,26 +40,23 @@ namespace Marmot::Materials {
       // dependence) so that only cSW has to be supplied to activate the driver.
       cSW( nMaterialProperties > 20 ? materialProperties[20] : 0.0 ),
       bSW( nMaterialProperties > 21 ? materialProperties[21] : 1e6 ),
-      dF( nMaterialProperties > 23 ? materialProperties[23] : 1.0 ),
+      dF( nMaterialProperties > 22 ? materialProperties[22] : 1.0 ),
       // cubic-exponent Rice-Tracey weight: the three entries AFTER the Prony triplets, in the
       // order (T^2, T^3, T). All absent -> 0 -> the published single-branch exp( 1.3 T ).
-      swdfmC2( swdfmExtra( materialProperties, nMaterialProperties, 0 ) ),
-      swdfmC3( swdfmExtra( materialProperties, nMaterialProperties, 1 ) ),
-      swdfmC1( swdfmExtra( materialProperties, nMaterialProperties, 2 ) ),
       // monotone-by-construction exponent + rate-dependent T-sensitivity; all absent -> the cubic
-      swdfmB0( swdfmExtra( materialProperties, nMaterialProperties, 3 ) ),
-      swdfmB1( swdfmExtra( materialProperties, nMaterialProperties, 4 ) ),
-      swdfmB2( swdfmExtra( materialProperties, nMaterialProperties, 5 ) ),
-      swdfmKdotRef( swdfmExtra( materialProperties, nMaterialProperties, 6 ) ),
-      swdfmS( swdfmExtra( materialProperties, nMaterialProperties, 7 ) ),
+      swdfmB0( swdfmExtra( materialProperties, nMaterialProperties, 0 ) ),
+      swdfmB1( swdfmExtra( materialProperties, nMaterialProperties, 1 ) ),
+      swdfmB2( swdfmExtra( materialProperties, nMaterialProperties, 2 ) ),
+      swdfmKdotRef( swdfmExtra( materialProperties, nMaterialProperties, 3 ) ),
+      swdfmS( swdfmExtra( materialProperties, nMaterialProperties, 4 ) ),
       // saturation value of the SOFTENING variable (Nguyen's Ds_inf); 0/absent -> 1.0
       // quartic term of the exponent, and the triaxiality above which g is held constant
-      swdfmTCap( swdfmExtra( materialProperties, nMaterialProperties, 10 ) ),
+      swdfmTCap( swdfmExtra( materialProperties, nMaterialProperties, 5 ) ),
       // quadratic acceleration of the softening tail; 0/absent -> the plain exponential
       // localizing gradient damage: floor R of the interaction function, and its steepness eta
       // optional generalized-Maxwell entries from 27 on; absent or nMaxwell = 0 reproduces the
       // purely hyperelastic-viscoplastic model exactly.
-      nMaxwell( nMaterialProperties > 27 ? static_cast< int >( materialProperties[27] ) : 0 ),
+      nMaxwell( nMaterialProperties > idxNMaxwell ? static_cast< int >( materialProperties[idxNMaxwell] ) : 0 ),
       maxwellDev( makeMaxwellProperties( materialProperties, nMaterialProperties, 0 ) ),
       maxwellVol( makeMaxwellProperties( materialProperties, nMaterialProperties, 1 ) )
   {
@@ -71,61 +69,42 @@ namespace Marmot::Materials {
     // every archived deck into a plausible-looking wrong answer. The mechanisms themselves were
     // eliminated by measurement; see Arcan_test_model/MATERIAL_CARD_LAYOUT.md for the evidence.
     // A deck that sets one of them is an OLD deck expecting different behaviour, so refuse it.
+    // ---- CARD GATES ---------------------------------------------------------------------------
+    // OLD-DECK GATE. The card was renumbered on 20 Aug 2026 from 60 entries to 51: every retired
+    // slot was DELETED, not held as a placeholder. A deck written for the old layout puts dF = 0.1
+    // at index 23, which is now nMaxwell, so it would read as ZERO Maxwell branches and switch
+    // viscoelasticity off in silence. That is the exact class of mistake this project has already
+    // paid for, so detect it and refuse.
     {
-      struct Retired {
-        int         which;
-        const char* name;
-        const char* why;
-      };
-      const Retired retiredFixed[] =
-        { { 22, "kSW", "Lode-angle term: 800k trial cards, best 1.6 % vs 1.4 % without" },
-          { 24, "volDriver", "drive D from plastic dilatation instead of alphaP" },
-          { 25,
-            "Xt",
-            "paraboloidal stress-onset surface: no surface fits the 3 Arcan points and the SLJ never reaches onset" },
-          { 26, "Xc", "paraboloidal stress-onset surface" } };
-      for ( const auto& r : retiredFixed )
-        if ( nMaterialProperties > r.which && materialProperties[r.which] != 0.0 )
-          throw std::invalid_argument( std::string( "DufourModel: card slot " ) + std::to_string( r.which ) + " ( " +
-                                       r.name + " ) is RETIRED and must be 0 or absent. " + r.why +
-                                       ". See Arcan_test_model/MATERIAL_CARD_LAYOUT.md." );
+      const double atNMaxwell = nMaterialProperties > idxNMaxwell ? materialProperties[idxNMaxwell] : 0.0;
+      const bool   plausible  = atNMaxwell >= 0.0 && atNMaxwell <= static_cast< double >( nMaxwellMax ) &&
+                             atNMaxwell == std::floor( atNMaxwell );
+      if ( !plausible )
+        throw std::invalid_argument(
+          "DufourModel: entry [23] must be nMaxwell, an integer in 0.." + std::to_string( nMaxwellMax ) +
+          ", but it is " + std::to_string( atNMaxwell ) +
+          ". This is the signature of a deck written for the PRE-20-Aug-2026 card, which had 60 "
+          "entries and carried dF at [23]. The card now has 51 entries and every retired slot is "
+          "gone. Regenerate the deck. See Arcan_test_model/MATERIAL_CARD_LAYOUT.md." );
 
-      const Retired retiredExtra[] =
-        { { 8, "dsInf", "softening saturation Ds_inf" },
-          { 9,
-            "swdfmC4",
-            "quartic exponent term: 2.40 % of SLJ cells past D=1 against the cubic 2.60 %, 4.4 % needed" },
-          { 11, "swdfmBeta", "accelerated softening tail" },
-          { 12, "swdfmLocR", "Poh-Sun localizing gradient: no-op on the SLJ, and incompatible with a coarse mesh" },
-          { 13, "swdfmLocEta", "Poh-Sun localizing gradient steepness" } };
-      for ( const auto& r : retiredExtra )
-        if ( swdfmExtra( materialProperties, nMaterialProperties, r.which ) != 0.0 )
-          throw std::invalid_argument( std::string( "DufourModel: card slot swdfmExtra[" ) + std::to_string( r.which ) +
-                                       "] ( " + r.name + " ) is RETIRED and must be 0 or absent. " + r.why +
-                                       ". See Arcan_test_model/MATERIAL_CARD_LAYOUT.md." );
+      const int expected = idxPronyBase + 3 * static_cast< int >( atNMaxwell ) + nSwdfmExtra;
+      if ( nMaterialProperties > expected )
+        throw std::invalid_argument(
+          "DufourModel: the card has " + std::to_string( nMaterialProperties ) +
+          " entries but the "
+          "layout ends at " +
+          std::to_string( expected ) +
+          " for this nMaxwell. Extra entries mean a deck written for the pre-20-Aug-2026 card, or "
+          "a retired parameter that no longer exists. Regenerate the deck." );
     }
 
-    // THE CUBIC EXPONENT IS RETIRED (20 Aug 2026). Its three slots stay in place, because the
-    // card is positional, but they must be zero. A nonzero value there is either a deck written
-    // for the cubic law or a deck written for the even older two-branch ( swdfmT0, swdfmExp2 )
-    // pair. Both would be silently re-read as something else, which is the class of mistake that
-    // has cost this project results before. Refuse them.
-    if ( swdfmC1 != 0.0 || swdfmC2 != 0.0 || swdfmC3 != 0.0 )
-      throw std::invalid_argument(
-        "DufourModel: entries [28..30 + 3 nMaxwell] ( swdfmC2, swdfmC3, swdfmC1 ) are the RETIRED "
-        "cubic exponent and must all be 0. The cubic had three free coefficients against two "
-        "independent constraints, and its slope at T = 0 was 2.9 times the Rice-Tracey slope of "
-        "the T <= 0 branch. Use the monotone exponent at [31..33 + 3 nMaxwell]: "
-        "( b0, b1, b2 ) = ( 1.1402, -0.4450, 0.9725 ), where b0 = sqrt( 1.3 ) is fixed by "
-        "Rice-Tracey and only b1, b2 are fitted. See Arcan_test_model/MATERIAL_CARD_LAYOUT.md." );
-
-    // The exponent shape is now mandatory. Without it E == 0, so g == 1 for every T > 0 and the
-    // triaxiality dependence vanishes silently.
+    // The exponent shape is mandatory while the driver is active. Without it E == 0, so g == 1 at
+    // every positive triaxiality and the stress-state dependence vanishes in silence.
     if ( cSW != 0.0 && !swdfmShapeGiven() )
       throw std::invalid_argument(
         "DufourModel: the SWDFM driver is active ( cSW != 0 ) but the card gives no exponent shape "
-        "at [31..33 + 3 nMaxwell] ( b0, b1, b2 ). Without it g = 1 at every positive triaxiality "
-        "and the stress-state dependence is silently absent. Set "
+        "at [45..47] ( b0, b1, b2 ). Without it g = 1 at every positive triaxiality and the "
+        "stress-state dependence is silently absent. Set "
         "( b0, b1, b2 ) = ( 1.1402, -0.4450, 0.9725 )." );
 
     // A rate exponent without a reference rate is silently inert -- w would never be applied -- so

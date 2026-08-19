@@ -28,9 +28,11 @@ namespace {
   // Base 20 entries, then the damage-variant slots 20..26 switched OFF (cSW = 0, Xt = 0) so that
   // ONLY the classical omega = 1 - exp(-alphaP_bar/epsF) law is active, then:
   //   [27] nMaxwell, and per branch [28+3i] gammaG_i, [29+3i] gammaK_i, [30+3i] tau_i.
-  const std::vector< double > propsBase = { 1793.9, 828.0, 12.0, 21.6,   4051.0, 15.8, 552.0, 243.0, 0.0,
-                                            0.0,    15.4,  1e-6, 0.0435, 0.3,    0.5,  1.75,  0.99,  0.12,
-                                            1.0,    1.0,   0.0,  1e6,    0.0,    0.1,  0.0,   0.0,   0.0 };
+  // 23 entries, indices 0..22, on the card renumbered 20 Aug 2026:
+  //   0..19  K G ft fc Q1 Q2 b1 b2 b3 b4 b5 eta_VP n nuP+ nuP- epsF omegaMax ld m density
+  //   20 cSW ( 0 here, i.e. the driver OFF )   21 bSW   22 dF
+  const std::vector< double > propsBase = { 1793.9, 828.0, 12.0, 21.6, 4051.0, 15.8, 552.0, 243.0, 0.0, 0.0, 15.4, 1e-6,
+                                            0.0435, 0.3,   0.5,  1.75, 0.99,   0.12, 1.0,   1.0,   0.0, 1e6, 0.1 };
 
   // two branches, deliberately unequal shear/bulk weights and well-separated relaxation times
   std::vector< double > withMaxwell( std::vector< double > gammaGKTau )
@@ -350,15 +352,12 @@ void testViscoelasticRelaxationLimits()
 // ---------------------------------------------------------------------------------------------
 
 // Append the ( c2, c3, c1 ) shape entries to a 7-branch Prony card.
-std::vector< double > withCubicG( double c2, double c3, double c1 )
+std::vector< double > withProny()
 {
   std::vector< double > card = withMaxwell( { 0.121756, 0.121756, 100.0,    0.058253, 0.058253, 17.78,    0.054825,
                                               0.054825, 3.1623,   0.038975, 0.038975, 0.5623,   0.030845, 0.030845,
                                               0.1,      0.020811, 0.020811, 0.0178,   0.018788, 0.018788, 0.0032 } );
   card[20]                   = 1.797; // cSW, the centring constant of the same fit
-  card.push_back( c2 );
-  card.push_back( c3 );
-  card.push_back( c1 );
   return card;
 }
 
@@ -373,8 +372,8 @@ std::vector< double > withCubicG( double c2, double c3, double c1 )
 // ---------------------------------------------------------------------------------------------
 std::vector< double > withMonotoneG( double b0, double b1, double b2, double kdotRef, double s )
 {
-  std::vector< double > card = withCubicG( 0.0, 0.0, 0.0 ); // Prony tail + three cleared cubic slots
-  card[20]                   = 2.006;                       // cSW of the same fit
+  std::vector< double > card = withProny();
+  card[20]                   = 2.006; // cSW of the same fit
   card.push_back( b0 );
   card.push_back( b1 );
   card.push_back( b2 );
@@ -445,23 +444,47 @@ void testCardWithoutExponentShapeIsRefused()
                              std::string( __PRETTY_FUNCTION__ ) );
 }
 
-// G-3: a deck written for the SUPERSEDED two-branch law -- ( swdfmT0, swdfmExp2 ) = ( 0.88, 4.10 )
-// and no third entry -- must be REFUSED, not silently re-read as the cubic ( c2, c3 ).
-void testLegacyTwoBranchCardIsRefused()
+// G-3: a deck written for the PRE-20-Aug-2026 card must be REFUSED, not silently re-read. The old
+// card had 60 entries and carried dF at [23]; [23] is now nMaxwell, so an old deck would read as
+// ZERO Maxwell branches and switch viscoelasticity off without a word.
+void testPreRenumberCardIsRefused()
 {
-  std::vector< double > card = withCubicG( -5.75, 3.50, 3.75 );
-  card.pop_back();              // drop c1: the legacy card has only two entries
-  card[card.size() - 2] = 0.88; // old swdfmT0
-  card[card.size() - 1] = 4.10; // old swdfmExp2
-  bool threw            = false;
-  try {
-    DufourModel mat( card.data(), static_cast< int >( card.size() ), elLabel );
-  }
-  catch ( const std::invalid_argument& ) {
-    threw = true;
-  }
-  throwExceptionOnFailure( threw,
-                           "DufourModel G-3: a legacy two-branch card was accepted instead of refused in " +
+  auto refuses = []( const std::vector< double >& c ) {
+    try {
+      DufourModel mat( c.data(), static_cast< int >( c.size() ), elLabel );
+    }
+    catch ( const std::invalid_argument& ) {
+      return true;
+    }
+    return false;
+  };
+
+  // The production card as it stood before the renumbering: 60 entries, dF = 0.1 at [23],
+  // nMaxwell = 7 at [27], the cubic ( c2, c3, c1 ) at [49..51].
+  const std::vector< double > old60 = { 1793.9,   828.0,    12.0,     21.6,     4051.0,   13.65,    552.0,    243.0,
+                                        0.0,      0.0,      22.13,    1e-6,     0.0435,   0.3,      0.5,      1.75,
+                                        0.99,     0.09,     1.0,      1.0,      1.797,    1e6,      0.0,      0.1,
+                                        0.0,      0.0,      0.0,      7.0,      0.121756, 0.121756, 100.0,    0.058253,
+                                        0.058253, 17.78,    0.054825, 0.054825, 3.1623,   0.038975, 0.038975, 0.5623,
+                                        0.030845, 0.030845, 0.1,      0.020811, 0.020811, 0.0178,   0.018788, 0.018788,
+                                        0.0032,   -5.75,    3.5,      3.75,     0.0,      0.0,      0.0,      20.0,
+                                        -1.0,     0.0,      0.0,      0.0 };
+  throwExceptionOnFailure( refuses( old60 ),
+                           "DufourModel G-3: a 60-entry pre-renumber card was ACCEPTED. It would "
+                           "read dF = 0.1 as nMaxwell and switch viscoelasticity off in silence, in " +
+                             std::string( __PRETTY_FUNCTION__ ) );
+
+  // A card whose [23] is not an integer branch count must be refused for the same reason.
+  std::vector< double > bad = withProny();
+  bad[23]                   = 2.5;
+  throwExceptionOnFailure( refuses( bad ),
+                           "DufourModel G-3: a non-integer nMaxwell at [23] was accepted in " +
+                             std::string( __PRETTY_FUNCTION__ ) );
+
+  // And the correct 51-entry card must be ACCEPTED.
+  const std::vector< double > good = withMonotoneG( 1.1402, -0.4450, 0.9725, 20.0, -1.0 );
+  throwExceptionOnFailure( !refuses( good ),
+                           "DufourModel G-3: the renumbered 51-entry card was refused in " +
                              std::string( __PRETTY_FUNCTION__ ) );
 }
 
@@ -555,20 +578,20 @@ double damagingTangentError( double sVal, bool rateOn )
   std::vector< double > card = propsVisco;
   // swdfmExtra tail starts at 28 + 3 nMaxwell, with nMaxwell held at index 27. Derive it, never
   // count backwards from the end -- the tail length varies with how many extras a deck supplies.
-  const size_t base = 28 + 3 * static_cast< size_t >( card[27] );
-  if ( card.size() < base + 8 )
-    card.resize( base + 8, 0.0 );
+  const size_t base = 24 + 3 * static_cast< size_t >( card[23] ); // idxPronyBase + 3 nMaxwell
+  if ( card.size() < base + 6 )
+    card.resize( base + 6, 0.0 );
   card[18] = 0.0;                       // m = 0: drive the driver from the LOCAL alphaP. A material-point test
                                         // supplies no nonlocal field (step() passes A = 0), so with m = 1 the
                                         // weighted alphaP is identically zero and the driver can never move.
   card[20]       = 1.797;               // cSW -- propsBase ships 0.0, i.e. the driver switched OFF
-  card[base + 6] = rateOn ? 20.0 : 0.0; // swdfmKdotRef; 0 switches the rate term OFF
-  card[base + 7] = rateOn ? sVal : 0.0; // swdfmS
+  card[base + 3] = rateOn ? 20.0 : 0.0; // swdfmKdotRef; 0 switches the rate term OFF
+  card[base + 4] = rateOn ? sVal : 0.0; // swdfmS
   // propsVisco carries no swdfmExtra tail, so the exponent shape must be supplied here. Without
   // it the constructor refuses the card: a shapeless exponent means g = 1 at every T > 0.
-  card[base + 3] = 1.1402;  // swdfmB0 = sqrt( 1.3 ), fixed by Rice-Tracey
-  card[base + 4] = -0.4450; // swdfmB1
-  card[base + 5] = 0.9725;  // swdfmB2
+  card[base + 0] = 1.1402;  // swdfmB0 = sqrt( 1.3 ), fixed by Rice-Tracey
+  card[base + 1] = -0.4450; // swdfmB1
+  card[base + 2] = 0.9725;  // swdfmB2
 
   // Drive it hard enough to push the driver past D = 1, in a few committed increments.
   const double          dT = 0.02;
@@ -639,7 +662,7 @@ void testDamagingRateTangent()
   }
 }
 
-void testAmbiguousShapeCardsAreRefused()
+void testRateExponentWithoutReferenceRateIsRefused()
 {
   auto refuses = []( const std::vector< double >& c ) {
     try {
@@ -651,14 +674,9 @@ void testAmbiguousShapeCardsAreRefused()
     return false;
   };
 
+  // A rate exponent with no reference rate is silently inert: w would never be applied.
   throwExceptionOnFailure( refuses( withMonotoneG( 1.798, -0.702, -3.172, 0.0, 0.05 ) ),
                            "DufourModel G-7: a rate exponent with no reference rate was accepted in " +
-                             std::string( __PRETTY_FUNCTION__ ) );
-
-  std::vector< double > both = withMonotoneG( 1.798, -0.702, -3.172, 20.0, -1.0 );
-  both[both.size() - 5 - 3]  = -5.75; // resurrect a cubic coefficient alongside the quintic
-  throwExceptionOnFailure( refuses( both ),
-                           "DufourModel G-7: a card carrying BOTH exponent forms was accepted in " +
                              std::string( __PRETTY_FUNCTION__ ) );
 }
 
@@ -725,11 +743,11 @@ int main()
     testStateVarLayout,
     testMonotoneRiceTraceyWeight,
     testCardWithoutExponentShapeIsRefused,
-    testLegacyTwoBranchCardIsRefused,
+    testPreRenumberCardIsRefused,
     testMonotoneExponentIsMonotoneForAnyB,
     testRateFactorAndSentinel,
     testNoReferenceRateMeansNoRateDependence,
-    testAmbiguousShapeCardsAreRefused,
+    testRateExponentWithoutReferenceRateIsRefused,
     testCompressionBranchDecays,
     testDamagingRateTangent,
   };

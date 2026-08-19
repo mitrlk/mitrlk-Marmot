@@ -79,87 +79,40 @@ namespace Marmot::Materials {
     const double cSW, bSW, dF;
 
     // ------------------------------------------------------------------------------------------
-    // CUBIC-EXPONENT Rice-Tracey weight in the SWDFM driver -- OPTIONAL, the three card entries
-    // that follow the Prony triplets, i.e. [28 + 3 nMaxwell] .. [30 + 3 nMaxwell]:
+    // ---- THE CARD, 51 ENTRIES (renumbered 20 Aug 2026) ---------------------------------------
     //
-    //   [28 + 3 nMaxwell]  swdfmC2     RETIRED 20 Aug 2026. Must be 0.
-    //   [29 + 3 nMaxwell]  swdfmC3     RETIRED 20 Aug 2026. Must be 0.
-    //   [30 + 3 nMaxwell]  swdfmC1     RETIRED 20 Aug 2026. Must be 0.
-    //     The cubic exponent E = c1 T + c2 T^2 + c3 T^3 is gone. It had three free coefficients
-    //     against two independent constraints, and its slope at T = 0 was c1 = 3.75, which is
-    //     2.9 times the Rice-Tracey slope of the T <= 0 branch. That slope jump is not
-    //     defensible. The monotone form at [31..33 + 3 nMaxwell] replaces it and reproduces the
-    //     Arcan set as well or better. The three slots STAY, because the card is positional.
+    //   [ 0..19]  K G ft fc Q1 Q2 b1 b2 b3 b4 b5 eta_VP n nuP_plus nuP_minus epsF omegaMax ld m
+    //             density
+    //   [20]      cSW        SWDFM driver scale.  D = cSW INT g dkappa_bar, initiation at D = 1
+    //   [21]      bSW        divisor of the mirrored compression term in g.  1e6 = effectively off
+    //   [22]      dF         omega_f = 1 - exp( -(D-1)/dF ).  Sets the initiation-to-drop lag ONLY.
+    //                        It is NOT part of D, so it cannot move the failure point.
+    //   [23]      nMaxwell   number of Prony branches, integer 0..nMaxwellMax
+    //   [24+3i]   gammaG_i   DEVIATORIC relative modulus of branch i, i = 0 .. nMaxwell-1
+    //   [25+3i]   gammaK_i   VOLUMETRIC relative modulus of branch i
+    //   [26+3i]   tau_i      relaxation time of branch i  [s]
+    //   then, counted from  E = 24 + 3 nMaxwell   ( E = 45 when nMaxwell = 7 ):
+    //   [E+0]     swdfmB0    exponent shape.  E'(T) = ( b0 + b1 T + b2 T^2 )^2 >= 0 for ANY
+    //   [E+1]     swdfmB1    parameters, so E cannot decrease with triaxiality. b0 is NOT fitted:
+    //   [E+2]     swdfmB2    b0 = sqrt( swdfmExponent ) = sqrt( 1.3 ) makes E'( 0 ) = 1.3, which
+    //                        matches the slope of the T <= 0 branch, so E is C1 at T = 0. Only b1
+    //                        and b2 are fitted, against the Arcan 0 deg and 45 deg points.
+    //                        Calibrated: ( 1.1402, -0.4450, 0.9725 ). MANDATORY when cSW != 0.
+    //   [E+3]     swdfmKdotRef  reference rate [1/s], calibrated 20. 0 switches the rate term off.
+    //   [E+4]     swdfmS        rate exponent. NEGATIVE is a sentinel meaning "use n".
+    //                           w = ( kdot / kdotRef )^( -s ). The ONLY parameter that separates
+    //                           the SLJ from the Arcans, because the SLJ is ~2000x slower.
+    //   [E+5]     swdfmTCap     cap on T before evaluating E. 0 = no cap.
     //
-    //   g(T) = exp( c1 T + c2 T^2 + c3 T^3 ) - exp( -( c1 T + c2 T^2 + c3 T^3 ) ) / bSW
+    // NOTHING ELSE. Twelve parameters were deleted on 20 Aug 2026 rather than left as inert
+    // placeholders: kSW, volDriver, Xt, Xc, swdfmC1, swdfmC2, swdfmC3, dsInf, swdfmC4, swdfmBeta,
+    // swdfmLocR, swdfmLocEta. The constructor refuses a card that still carries them, because the
+    // old 60-entry layout put dF at [23], which is now nMaxwell, and would read as zero branches.
     //
-    // All three zero (or absent) reproduces the published single-branch law exp( 1.3 T ) bit for
-    // bit, so every deck that does not carry the tail is unaffected.
-    //
-    // CALIBRATED VALUE (HANDOFF S8.4, `calibration/refit_g.py`, no FE required):
-    //
-    //   g(T) = exp( 3.75 T - 5.75 T^2 + 3.50 T^3 ),  cSW = 1.797
-    //
-    // i.e. c1 = 3.75, c2 = -5.75, c3 = 3.50. Monotone increasing over T = 0..1.3 (verified
-    // numerically; min slope 1.5e-3), so it is admissible as a void-growth weight.
-    //
-    // WHY THIS REPLACED THE TWO-BRANCH KINK. The required constant cSW was measured on all nine
-    // Arcan runs plus the single-lap joint (ten runs). g must go as 1/kappa_bar_f: 2.05 at
-    // T = 0.07, 4.65 at 0.81, 12.39 at 1.08, i.e. a local exponent of 1.12 below T ~ 0.8 and 3.51
-    // above it. The superseded two-branch law reproduced that with a KINK at swdfmT0 = 0.88 --
-    // and the SLJ's damage-critical element sits at T ~ 0.59, so 0 % of its driver accumulated
-    // above the threshold and the whole term did nothing for the one specimen that was not in the
-    // fit (HANDOFF S7.2). One smooth rising exponent does the same job everywhere and needs no
-    // threshold. Measured spread of the required cSW over all ten runs: 2.42x -> 1.85x, against a
-    // within-angle rate-scatter floor of 1.18-1.37x. The SLJ then requires 2.53, the same as
-    // Arcan 0 deg, and is no longer the outlier.
-    //
-    // DOUBLE-COUNTING GATE (ledger 21.5 gate 3): this makes the DAMAGE law the owner of the
-    // cavitation mechanism. If a tension-side cap is ever added to the yield surface as well,
-    // one of the two must be removed -- nuP_plus already owns the plastic flow DIRECTION.
-    const double swdfmC2, swdfmC3, swdfmC1;
-
+    // T <= 0 uses E = swdfmExponent * T = 1.3 T with NO rate factor. A single polynomial cannot
+    // behave on both sides of T = 0: the even powers stay positive while the odd ones flip, so the
+    // tension coefficients would give damage FASTER in compression than in shear.
     // ------------------------------------------------------------------------------------------
-    // MONOTONE-BY-CONSTRUCTION exponent + RATE-DEPENDENT T-SENSITIVITY -- OPTIONAL, the five card
-    // entries after the cubic ones, i.e. [31 + 3 nMaxwell] .. [35 + 3 nMaxwell]:
-    //
-    //   [31 + 3 nMaxwell]  swdfmB0 |  E'(T) = ( b0 + b1 T + b2 T^2 )^2, so E is non-decreasing
-    //   [32 + 3 nMaxwell]  swdfmB1 |  for ANY parameter values -- monotonicity is structural, not
-    //   [33 + 3 nMaxwell]  swdfmB2 |  a fitted accident. All three zero -> use the cubic above.
-    //   [34 + 3 nMaxwell]  swdfmKdotRef   reference rate [1/s]; 0 (or absent) -> NO rate term
-    //   [35 + 3 nMaxwell]  swdfmS         rate exponent; NEGATIVE -> tie it to n (see below)
-    //
-    //   g(T, kdot) = exp( E(T) * w ),    w = ( kdot / swdfmKdotRef )^( -s )
-    //   E(T) = b0^2 T + b0 b1 T^2 + (b1^2 + 2 b0 b2)/3 T^3 + (b1 b2)/2 T^4 + (b2^2)/5 T^5
-    //
-    // with kdot = d alphaPBar / dt, the rate at which the driver itself accumulates. w > 0 always,
-    // so g stays non-decreasing in T at EVERY rate.
-    //
-    // CALIBRATED (HANDOFF S9.10, ten runs: 9 Arcan + the single-lap joint):
-    //   ( b0, b1, b2 ) = ( 1.798, -0.702, -3.172 ),  swdfmKdotRef = 20,  swdfmS < 0,  cSW = 2.006
-    // Spread of the required constant: 2.42x (published) -> 1.85x (cubic) -> 1.43x, against a floor
-    // of 1.18-1.37x set by the within-angle scatter across rates, which is experimental.
-    //
-    // WHY swdfmS < 0 MEANS "USE n". The freely fitted rate exponent is 0.0502; the model's own
-    // VISCOPLASTIC exponent n, identified by Dufour from three loading rates, is 0.0435. Fixing s
-    // to n costs 0.01x of spread (1.43x against 1.42x). So the rate dependence of FAILURE is the
-    // rate dependence the FLOW RULE already has, and it costs NO new parameter. Encoding it as a
-    // sentinel rather than as a repeated literal keeps the two tied if n is ever recalibrated.
-    //
-    // RATE FLOOR. On an elastic increment d alphaPBar = 0, so kdot = 0 and w would be infinite;
-    // the increment contributes nothing to D, but 0 * inf is NaN, so kdot is floored at
-    // swdfmKdotMin. The floor also bounds w: at 1e-8 /s against a reference of 20 it gives
-    // w <= 2.5, and the slowest real run (the SLJ at 1 mm/min) sits at 1e-3 /s, five decades above.
-    //
-    // MEASURED SPAN, so it is clear this is not a lever on one specimen: w = 1.535 / 1.105 / 1.000
-    // / 0.905 at the SLJ / 1 / 10 / 100 mm/s -- a factor 1.7 across FOUR decades. A rejected
-    // candidate with a log^2 rate factor scored better but applied x3.53 to the SLJ alone and
-    // x1.07 to all nine Arcan runs (ledger 25.10); that is why the form here acts on the
-    // T-SENSITIVITY and not as a common factor.
-    //
-    // DO NOT EXTRAPOLATE IN T. g = 1.00 / 1.77 / 2.48 / 2.72 / 2.80 / 4.30 / 22.0 at
-    // T = 0 / 0.2 / ... / 1.2 while the data reaches only T = 1.09 (Arcan 0 deg). The quintic rises
-    // very steeply past that; cap it before using this card on a new geometry.
     const double swdfmB0, swdfmB1, swdfmB2, swdfmKdotRef, swdfmS;
 
     // ------------------------------------------------------------------------------------------
@@ -220,8 +173,8 @@ namespace Marmot::Materials {
     /// Read one of the optional shape entries, which sit AFTER the Prony triplets.
     static double swdfmExtra( const double* materialProperties, int nMaterialProperties, int which )
     {
-      const int n = nMaterialProperties > 27 ? static_cast< int >( materialProperties[27] ) : 0;
-      const int i = 28 + 3 * ( n > 0 ? n : 0 ) + which;
+      const int n = nMaterialProperties > idxNMaxwell ? static_cast< int >( materialProperties[idxNMaxwell] ) : 0;
+      const int i = idxPronyBase + 3 * ( n > 0 ? n : 0 ) + which;
       return nMaterialProperties > i ? materialProperties[i] : 0.0;
     }
 
@@ -306,10 +259,6 @@ namespace Marmot::Materials {
     // stress, exactly as in the existing hyperelastic-viscoplastic split.
     //
     // Card layout, per branch i = 0 .. nMaxwell-1:
-    //     [27]          nMaxwell            number of branches (0..nMaxwellMax)
-    //     [28 + 3 i]    gammaG_i            DEVIATORIC relative modulus of branch i
-    //     [29 + 3 i]    gammaK_i            VOLUMETRIC relative modulus of branch i
-    //     [30 + 3 i]    tau_i               relaxation time of branch i  [s]
     //
     // NOTE on the parameter convention: gammaG_i / gammaK_i are RELATIVE (dimensionless) moduli,
     // gammaG_i = G_i / G_0, not absolute stiffnesses. The equilibrium branch carries the
@@ -329,6 +278,15 @@ namespace Marmot::Materials {
     // "n rates cannot identify more than ~n branches" argument does not apply and there is no
     // reason to condense the series and pay the approximation error.
     inline const static int nMaxwellMax = 7;
+
+    // ---- CARD LAYOUT CONSTANTS (renumbered 20 Aug 2026, 60 entries -> 51) --------------------
+    // Every retired slot was DELETED rather than held as a placeholder, so the card carries no
+    // parameter that does nothing. Read these instead of writing the numbers inline.
+    inline const static int idxNMaxwell  = 23; // was 27
+    inline const static int idxPronyBase = 24; // was 28; branch i occupies [24+3i .. 26+3i]
+    // swdfmExtra offsets, counted from idxPronyBase + 3 nMaxwell:
+    //   0 b0, 1 b1, 2 b2, 3 kdotRef, 4 s, 5 TCap
+    inline const static int nSwdfmExtra = 6;
 
     const int nMaxwell;
 
@@ -354,18 +312,18 @@ namespace Marmot::Materials {
       int           nMaterialProperties,
       int           which )
     {
-      const int n = nMaterialProperties > 27 ? static_cast< int >( materialProperties[27] ) : 0;
+      const int n = nMaterialProperties > idxNMaxwell ? static_cast< int >( materialProperties[idxNMaxwell] ) : 0;
       if ( n <= 0 )
         return ContinuumMechanics::FiniteStrain::Viscoelasticity::createMaxwellProperties( 0, nullptr );
       if ( n > nMaxwellMax )
         throw std::invalid_argument( "DufourModel: too many Maxwell branches for the state-var layout" );
-      if ( nMaterialProperties < 28 + 3 * n )
+      if ( nMaterialProperties < idxPronyBase + 3 * n )
         throw std::invalid_argument( "DufourModel: incomplete (gammaG, gammaK, tau) triplets on the material card" );
 
       std::vector< double > pairs( 2 * n );
       for ( int i = 0; i < n; i++ ) {
-        pairs[2 * i]     = materialProperties[28 + 3 * i + which]; // gammaG_i or gammaK_i
-        pairs[2 * i + 1] = materialProperties[30 + 3 * i];         // tau_i (shared)
+        pairs[2 * i]     = materialProperties[idxPronyBase + 3 * i + which]; // gammaG_i or gammaK_i
+        pairs[2 * i + 1] = materialProperties[idxPronyBase + 2 + 3 * i];     // tau_i (shared)
       }
       return ContinuumMechanics::FiniteStrain::Viscoelasticity::createMaxwellProperties( n, pairs.data() );
     }
