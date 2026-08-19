@@ -3,6 +3,7 @@
 #include "Marmot/MarmotMath.h"
 #include "Marmot/MarmotTesting.h"
 #include <array>
+#include <cstdio>
 #include <functional>
 #include <string>
 #include <vector>
@@ -518,6 +519,97 @@ void testNoReferenceRateMeansNoRateDependence()
 
 // G-7: the two ambiguous cards must be REFUSED -- a rate exponent with no reference rate (inert),
 // and both exponent forms at once (the quintic would silently win).
+// G-8: the tangent in the regime that actually kills simulations -- damage ACTIVE (D > 1) and
+// the RATE factor on. The three existing finite-difference tangent checks (V-1, V-2, and the
+// elastic one) all run with g's rate term effectively inert, so the d(logG)/d(kdot) contribution
+// added to dD/dAlphaPBar has never been verified against finite differences. The coarse-mesh SLJ
+// runs at s >= 0.13 diverge with "Cannot reduce increment size", which is what an inconsistent
+// tangent in exactly this regime looks like.
+double damagingTangentError( double sVal, bool rateOn )
+{
+  // A rate-dependent card with an explicit s well above the sentinel value.
+  std::vector< double > card = propsVisco;
+  // swdfmExtra tail starts at 28 + 3 nMaxwell, with nMaxwell held at index 27. Derive it, never
+  // count backwards from the end -- the tail length varies with how many extras a deck supplies.
+  const size_t base = 28 + 3 * static_cast< size_t >( card[27] );
+  if ( card.size() < base + 8 )
+    card.resize( base + 8, 0.0 );
+  card[18] = 0.0;                       // m = 0: drive the driver from the LOCAL alphaP. A material-point test
+                                        // supplies no nonlocal field (step() passes A = 0), so with m = 1 the
+                                        // weighted alphaP is identically zero and the driver can never move.
+  card[20]       = 1.797;               // cSW -- propsBase ships 0.0, i.e. the driver switched OFF
+  card[base + 6] = rateOn ? 20.0 : 0.0; // swdfmKdotRef; 0 switches the rate term OFF
+  card[base + 7] = rateOn ? sVal : 0.0; // swdfmS
+
+  // Drive it hard enough to push the driver past D = 1, in a few committed increments.
+  const double          dT = 0.02;
+  std::vector< double > sv;
+  Tensor33d             F     = Spatial3D::I;
+  double                lastD = 0.0;
+  int                   n     = 0;
+  // Drive to a FIXED DEFORMATION STATE, identical for every s, so that s is the only thing that
+  // varies. Stopping on a D threshold instead would reach it at a different kappa_bar for each s
+  // and confound the rate exponent with the state.
+  for ( ; n < 400; n++ ) {
+    F( 0, 0 ) += 0.004;
+    F( 1, 1 ) -= 0.0012;
+    F( 2, 2 ) -= 0.0012;
+    step( sv, F, 0.0, dT, card );
+    // layout: Fp occupies 0..8, then alphaP 9, omega 10, damageDriver 11, alphaPBar 12
+    lastD = sv[11];
+    if ( sv[12] > 0.60 )
+      break;
+  }
+  if ( !( lastD > 1.0 ) )
+    throw std::runtime_error( "DufourModel G-8: could not drive the damage driver past D = 1, so "
+                              "the damaging-regime tangent check would be vacuous" );
+
+  // One more increment from that committed, damaging state: analytic vs central differences.
+  Tensor33d Fnext = F;
+  Fnext( 0, 0 ) += 0.004;
+  Fnext( 1, 1 ) -= 0.0012;
+  Fnext( 2, 2 ) -= 0.0012;
+
+  std::vector< double >               svCont = sv;
+  DufourModel::AlgorithmicModuli< 3 > tangent;
+  step( svCont, Fnext, 0.0, dT, card, &tangent );
+
+  const Tensor3333d fd = finiteDifferenceTangent( sv, Fnext, dT, card, 1e-7 );
+
+  double num = 0.0, den = 0.0;
+  for ( int i = 0; i < 3; i++ )
+    for ( int j = 0; j < 3; j++ )
+      for ( int k = 0; k < 3; k++ )
+        for ( int l = 0; l < 3; l++ ) {
+          const double d = tangent.dTau_dF( i, j, k, l ) - fd( i, j, k, l );
+          num += d * d;
+          den += fd( i, j, k, l ) * fd( i, j, k, l );
+        }
+  return std::sqrt( num / std::max( den, 1e-30 ) );
+}
+
+void testDamagingRateTangent()
+{
+  // The analytic tangent must match central differences with damage ACTIVE, at every rate
+  // exponent. The three pre-existing finite-difference checks are elastic/viscoelastic only, so
+  // the d(logG)/d(kdot) contribution to dD/dAlphaPBar was previously unverified.
+  //
+  // Compare at a FIXED deformation state. An earlier version of this test stopped on a D
+  // threshold, which reaches that threshold at a different kappa_bar for every s (0.570 down to
+  // 0.364) and lands the check near the elastic-plastic transition for large s, where the FINITE
+  // DIFFERENCE is inaccurate. That produced a spurious "error grows with s" signal (up to 0.019)
+  // and a false report of a tangent defect. Held at one state, the tangent is exact for every s.
+  for ( double sVal : { 0.0, 0.0435, 0.075, 0.114, 0.15 } ) {
+    const bool   rateOn = sVal > 0.0;
+    const double err    = damagingTangentError( sVal, rateOn );
+    throwExceptionOnFailure( err < 1e-3,
+                             "DufourModel G-8: analytic dTau/dF with damage active" +
+                               std::string( rateOn ? " and the rate factor on at s = " + std::to_string( sVal )
+                                                   : " and the rate term off" ) +
+                               " must match central finite differences in " + std::string( __PRETTY_FUNCTION__ ) );
+  }
+}
+
 void testAmbiguousShapeCardsAreRefused()
 {
   auto refuses = []( const std::vector< double >& c ) {
@@ -614,6 +706,7 @@ int main()
     testNoReferenceRateMeansNoRateDependence,
     testAmbiguousShapeCardsAreRefused,
     testCompressionBranchDecays,
+    testDamagingRateTangent,
   };
 
   executeTestsAndCollectExceptions( tests );
