@@ -22,11 +22,6 @@ namespace {
 
   // Evaluate the Kirchhoff-stress response (and, optionally, the analytic tangent) for a given
   // deformation gradient F and nonlocal field A, always starting from a fresh (undeformed) state.
-  // SWDFM/paraboloidal card: base 20 entries + cSW, bSW, kSW, dF, volDriver, Xt, Xc.
-  // Xt/Xc active -> the stress-driven omega_f branch and its tangent contribution are exercised.
-  const std::vector< double > propsStress = { 1793.9, 828.0, 12.0, 21.6,   4051.0, 15.8, 552.0, 243.0, 0.0,
-                                              0.0,    15.4,  1e-6, 0.0435, 0.3,    0.5,  1.75,  0.99,  0.12,
-                                              1.0,    1.0,   0.0,  1e6,    0.0,    0.1,  0.0,   8.0,   14.4 };
 
   // ---- viscoelasticity cards -----------------------------------------------------------------
   // Base 20 entries, then the damage-variant slots 20..26 switched OFF (cSW = 0, Xt = 0) so that
@@ -171,50 +166,6 @@ void testPureRotation()
                              "DufourModel I-3: pure rotation (phi_deg=" + std::to_string( phi_deg ) +
                                ") must yield zero stress in " + std::string( __PRETTY_FUNCTION__ ) );
   }
-}
-
-// I-5: with the STRESS-DRIVEN omega_f active (Xt, Xc set low enough that phiBar > 1), the
-// analytic dTau/dF must still match central finite differences. This checks the
-// -tau_eff (x) ( dOmega/dTau : dTau_eff/dF ) contribution, which is easy to get wrong.
-void testAlgorithmicTangentStressDrivenDamage()
-{
-  Tensor33d F0 = Spatial3D::I;
-  F0( 0, 0 ) += 0.010;
-  F0( 1, 1 ) -= 0.003;
-  F0( 2, 2 ) -= 0.003;
-  F0( 0, 1 ) += 0.002;
-  F0( 1, 0 ) += 0.002;
-
-  DufourModel::AlgorithmicModuli< 3 > tangent;
-  const auto                          r0 = evaluate( F0, 0.0, &tangent, propsStress );
-  if ( !( r0.tau( 0, 0 ) > 0.0 ) )
-    throw std::runtime_error( "DufourModel I-5: test state carries no stress" );
-
-  // Guard against the test becoming vacuous: omega_f must actually be ACTIVE in this state,
-  // i.e. the stress-driven branch must change the response relative to Xt = 0.
-  const auto rNoFail = evaluate( F0, 0.0, nullptr );
-  if ( std::abs( r0.tau( 0, 0 ) - rNoFail.tau( 0, 0 ) ) < 1e-8 * std::abs( rNoFail.tau( 0, 0 ) ) )
-    throw std::runtime_error( "DufourModel I-5: stress-driven omega_f is NOT active - "
-                              "the tangent check would be vacuous" );
-
-  const double eps = 1e-7;
-  Tensor3333d  dTau_dF_fd( 0.0 );
-  for ( int k = 0; k < 3; k++ )
-    for ( int l = 0; l < 3; l++ ) {
-      Tensor33d Fp = F0, Fm = F0;
-      Fp( k, l ) += eps;
-      Fm( k, l ) -= eps;
-      const auto rp = evaluate( Fp, 0.0, nullptr, propsStress );
-      const auto rm = evaluate( Fm, 0.0, nullptr, propsStress );
-      for ( int i = 0; i < 3; i++ )
-        for ( int j = 0; j < 3; j++ )
-          dTau_dF_fd( i, j, k, l ) = ( rp.tau( i, j ) - rm.tau( i, j ) ) / ( 2.0 * eps );
-    }
-
-  throwExceptionOnFailure( checkIfEqual( tangent.dTau_dF, dTau_dF_fd, 1e-2 ),
-                           "DufourModel I-5: analytic dTau/dF with stress-driven damage must match "
-                           "central finite differences in " +
-                             std::string( __PRETTY_FUNCTION__ ) );
 }
 
 // I-4: analytic dTau/dF must match central finite differences (elastic regime)
@@ -590,383 +541,6 @@ void testAmbiguousShapeCardsAreRefused()
                              std::string( __PRETTY_FUNCTION__ ) );
 }
 
-// G-8: Ds_inf, the SATURATION value of the softening variable (Nguyen eq. 79-81). Ds_inf = 1 or
-// absent must reproduce the previous law bit for bit; Ds_inf < 1 must BOUND omega_s so that the
-// softening variable can never fail the material on its own; Ds_inf > 1 must be refused.
-void testDsInfSaturatesTheSofteningVariable()
-{
-  // omega_s is not directly exposed, so it is read through the UNDAMAGED-state response: at a given
-  // deformation the Kirchhoff stress carries the factor (1 - omega), and with cSW = 0 the only
-  // damage present is omega_s. Comparing Ds_inf = 1 against Ds_inf = 0.3 therefore isolates it.
-  auto card = []( double ds ) {
-    std::vector< double > c = withMonotoneG( 1.936, -0.484, -3.249, 20.0, -1.0 );
-    c[20]                   = 0.0; // cSW off: omega_f cannot contribute
-    c.push_back( ds );
-    return c;
-  };
-  const std::vector< double > c1 = card( 0.0 ), cS = card( 0.3 );
-  DufourModel                 m1( c1.data(), static_cast< int >( c1.size() ), elLabel );
-  DufourModel                 mS( cS.data(), static_cast< int >( cS.size() ), elLabel );
-  throwExceptionOnFailure( checkIfEqual( m1.dsInfEff(), 1.0, 1e-14 ),
-                           "DufourModel G-8: an absent Ds_inf must fall back to 1.0 in " +
-                             std::string( __PRETTY_FUNCTION__ ) );
-  throwExceptionOnFailure( checkIfEqual( mS.dsInfEff(), 0.3, 1e-14 ),
-                           "DufourModel G-8: Ds_inf was not read from the card in " +
-                             std::string( __PRETTY_FUNCTION__ ) );
-
-  // stretch well past yield so omega_s is appreciable, then compare the two
-  Tensor33d F( 0.0 );
-  F( 0, 0 ) = 1.35;
-  F( 1, 1 ) = F( 2, 2 ) = 1.0 / std::sqrt( 1.35 );
-  std::vector< double > sv1, svS;
-  const double          A  = 0.45; // nonlocal field: well into softening
-  const auto            r1 = step( sv1, F, A, 1.0, c1 );
-  const auto            rS = step( svS, F, A, 1.0, cS );
-  // less degradation -> MORE stress. Bounding omega_s cannot reduce the stress.
-  throwExceptionOnFailure( rS.tau( 0, 0 ) > r1.tau( 0, 0 ),
-                           "DufourModel G-8: Ds_inf = 0.3 did not raise the stress relative to "
-                           "Ds_inf = 1, so omega_s is not being bounded, in " +
-                             std::string( __PRETTY_FUNCTION__ ) );
-
-  // and Ds_inf > 1 must throw
-  bool threw = false;
-  try {
-    const std::vector< double > cBad = card( 1.4 );
-    DufourModel                 mBad( cBad.data(), static_cast< int >( cBad.size() ), elLabel );
-  }
-  catch ( const std::invalid_argument& ) {
-    threw = true;
-  }
-  throwExceptionOnFailure( threw,
-                           "DufourModel G-8: Ds_inf > 1 was accepted instead of refused in " +
-                             std::string( __PRETTY_FUNCTION__ ) );
-}
-
-// G-9: the QUARTIC exponent and the EXTRAPOLATION CAP.
-//   E(T) = c1 T + c2 T^2 + c3 T^3 + c4 T^4,  evaluated at min(T, TCap)
-// Calibrated: (c1,c2,c3,c4) = (-0.07, 18.12, -35.58, 18.85), TCap = 1.10, cSW = 1.754.
-// The reference values are the ones the Python fit produced, so a drift shows up here.
-void testQuarticExponentAndCap()
-{
-  // card order after the Prony triplets: c2, c3, c1, b0, b1, b2, kdotRef, s, dsInf, c4, TCap
-  auto card = []( double TCap ) {
-    std::vector< double > c = withCubicG( 18.12, -35.58, -0.07 ); // (c2, c3, c1)
-    c[20]                   = 1.754;                              // cSW of the same fit
-    c.push_back( 0.0 );
-    c.push_back( 0.0 );
-    c.push_back( 0.0 );   // b0,b1,b2 -> quartic form off
-    c.push_back( 0.0 );
-    c.push_back( 0.0 );   // kdotRef, s
-    c.push_back( 0.0 );   // dsInf -> 1
-    c.push_back( 18.85 ); // c4
-    c.push_back( TCap );
-    return c;
-  };
-  const std::vector< double > c = card( 1.10 );
-  DufourModel                 mat( c.data(), static_cast< int >( c.size() ), elLabel );
-
-  // the four triaxialities the four specimens actually sit at
-  const std::array< double, 4 > T   = { 0.0, 0.584, 0.806, 1.087 };
-  const std::array< double, 4 > ref = { 1.00, 3.47, 2.83, 7.05 };
-  for ( size_t i = 0; i < T.size(); i++ )
-    throwExceptionOnFailure( checkIfEqual( std::exp( mat.swdfmLogG( T[i] ) ), ref[i], 2e-2 ),
-                             "DufourModel G-9: quartic g(T) wrong at T = " + std::to_string( T[i] ) + " in " +
-                               std::string( __PRETTY_FUNCTION__ ) );
-
-  // NON-MONOTONE by design: it must DIP between the SLJ and Arcan 45 deg
-  throwExceptionOnFailure( mat.swdfmLogG( 0.584 ) > mat.swdfmLogG( 0.806 ),
-                           "DufourModel G-9: g must DIP from T = 0.584 to 0.806 -- that dip is the "
-                           "whole point of the quartic, see ledger 28.2, in " +
-                             std::string( __PRETTY_FUNCTION__ ) );
-
-  // THE CAP. Uncapped, g(1.5) = 9e6 and a butt joint fails at first load.
-  const double gCap = std::exp( mat.swdfmLogG( 1.10 ) );
-  for ( double Tq : { 1.10, 1.3, 1.5, 3.0 } )
-    throwExceptionOnFailure( checkIfEqual( std::exp( mat.swdfmLogG( Tq ) ), gCap, 1e-12 ),
-                             "DufourModel G-9: g is not held constant above the cap at T = " + std::to_string( Tq ) +
-                               " in " + std::string( __PRETTY_FUNCTION__ ) );
-  const std::vector< double > cNo = card( 0.0 );
-  // no cap given with a quartic present -> must throw (the butt-joint guard)
-  bool threw = false;
-  try {
-    DufourModel bad( cNo.data(), static_cast< int >( cNo.size() ), elLabel );
-  }
-  catch ( const std::invalid_argument& ) {
-    threw = true;
-  }
-  throwExceptionOnFailure( threw,
-                           "DufourModel G-9: a quartic exponent with NO extrapolation cap was "
-                           "accepted; g(1.5) = 9e6 would fail a butt joint at first load, in " +
-                             std::string( __PRETTY_FUNCTION__ ) );
-}
-
-// G-11..G-14: the SOFTENING TAIL ACCELERATION (swdfmBeta).
-//   omega_s = Ds_inf [ 1 - exp( -x - beta x^2 ) ],  x = kappa_bar / epsF
-// Measured basis: Gf = 2.890 N/mm for this card (ledger 29.24), joint needs 0.65 (Dufour's SLJ
-// inverse fit). Gf ~ ld * int(1-omega_s) dkappa_bar = ld * epsF for beta = 0.
-std::vector< double > withBeta( double beta )
-{
-  std::vector< double > c = withCubicG( -5.75, 3.50, 3.75 );
-  c.push_back( 0.0 );
-  c.push_back( 0.0 );
-  c.push_back( 0.0 );  // b0,b1,b2 off
-  c.push_back( 20.0 );
-  c.push_back( -1.0 ); // kdotRef, s sentinel
-  c.push_back( 0.0 );  // dsInf -> 1
-  c.push_back( 0.0 );
-  c.push_back( 0.0 );  // c4, TCap off
-  c.push_back( beta ); // swdfmBeta
-  return c;
-}
-
-// G-11: beta = 0 must reproduce the plain exponential BIT FOR BIT.
-void testBetaZeroReproducesExponential()
-{
-  const std::vector< double > c = withBeta( 0.0 );
-  DufourModel                 a( c.data(), static_cast< int >( c.size() ), elLabel );
-  const double                epsF = 1.75;
-  for ( double k : { 0.0, 0.01, 0.1, 0.5, 1.0, 1.75, 3.0, 10.0 } ) {
-    double om, dom;
-    a.softening( k, om, dom );
-    throwExceptionOnFailure( checkIfEqual( om, 1.0 - std::exp( -k / epsF ), 1e-14 ) &&
-                               checkIfEqual( dom, std::exp( -k / epsF ) / epsF, 1e-14 ),
-                             "DufourModel G-11: beta = 0 changed the softening law at kappa_bar = " +
-                               std::to_string( k ) + " in " + std::string( __PRETTY_FUNCTION__ ) );
-  }
-}
-
-// G-12: THE PROPERTY THE WHOLE CHOICE RESTS ON -- the initial slope is 1/epsF for EVERY beta, so
-// epsF keeps the meaning Dufour's DIC fit gave it. Also: monotone, bounded, and NEVER reaching 1 at
-// finite kappa_bar (so no second failure criterion is smuggled in).
-void testBetaPreservesInitialSlope()
-{
-  const double epsF = 1.75;
-  for ( double beta : { 0.0, 1.475, 3.859, 11.266, 100.0 } ) {
-    const std::vector< double > c = withBeta( beta );
-    DufourModel                 mat( c.data(), static_cast< int >( c.size() ), elLabel );
-    double                      om, dom;
-    mat.softening( 0.0, om, dom );
-    throwExceptionOnFailure( checkIfEqual( dom, 1.0 / epsF, 1e-12 ),
-                             "DufourModel G-12: the initial softening slope must be 1/epsF for EVERY "
-                             "beta -- that is the entire reason this form was chosen. beta = " +
-                               std::to_string( beta ) + " gave " + std::to_string( dom ) + " in " +
-                               std::string( __PRETTY_FUNCTION__ ) );
-    double prev = -1.0;
-    for ( int i = 0; i <= 2000; ++i ) {
-      const double k = 20.0 * i / 2000.0;
-      mat.softening( k, om, dom );
-      throwExceptionOnFailure( om >= prev - 1e-14 && om <= 1.0 && dom >= -1e-14,
-                               "DufourModel G-12: omega_s must be monotone, bounded by 1 and have "
-                               "non-negative slope; failed at kappa_bar = " +
-                                 std::to_string( k ) + ", beta = " + std::to_string( beta ) + " in " +
-                                 std::string( __PRETTY_FUNCTION__ ) );
-      prev = om;
-    }
-    // Strictly BELOW 1 over the strain range that actually OCCURS, so no second failure criterion
-    // is smuggled in. The largest kappa_bar measured in any specimen is 0.559 (Arcan 90 deg, at
-    // D = 1); 1.0 is that with margin. Beyond kappa_bar ~ 3 the exponential UNDERFLOWS and
-    // 1 - exp(...) == 1.0 exactly in double -- a floating-point artefact at strains no element
-    // reaches, not a finite failure strain, so it is deliberately not tested there.
-    mat.softening( 1.0, om, dom );
-    throwExceptionOnFailure( om < 1.0,
-                             "DufourModel G-12: omega_s reached 1 at kappa_bar = 1.0, well inside the "
-                             "range elements actually visit -- that would add a second failure "
-                             "criterion (beta = " +
-                               std::to_string( beta ) + ") in " + std::string( __PRETTY_FUNCTION__ ) );
-    // and no JUMP anywhere in that range: the form must be smooth (the hard cutoff was rejected
-    // partly for imposing a 78% instantaneous stress drop)
-    double omPrev, dPrev;
-    mat.softening( 0.0, omPrev, dPrev );
-    for ( int i = 1; i <= 4000; ++i ) {
-      const double k = 1.0 * i / 4000.0;
-      mat.softening( k, om, dom );
-      throwExceptionOnFailure( om - omPrev < 0.02,
-                               "DufourModel G-12: omega_s JUMPS by " + std::to_string( om - omPrev ) +
-                                 " in one 2.5e-4 strain step at kappa_bar = " + std::to_string( k ) +
-                                 " (beta = " + std::to_string( beta ) + "); the form must be smooth, in " +
-                                 std::string( __PRETTY_FUNCTION__ ) );
-      omPrev = om;
-    }
-  }
-}
-
-// G-13: the returned derivative must BE the derivative of the returned value.
-void testBetaDerivativeIsExact()
-{
-  for ( double beta : { 0.0, 1.475, 3.859, 11.266 } ) {
-    const std::vector< double > c = withBeta( beta );
-    DufourModel                 mat( c.data(), static_cast< int >( c.size() ), elLabel );
-    for ( double k : { 0.02, 0.1, 0.3, 0.6, 1.0, 1.75, 3.0 } ) {
-      const double h = 1e-7;
-      double       op, dop, om1, om2, dummy;
-      mat.softening( k, op, dop );
-      mat.softening( k + h, om2, dummy );
-      mat.softening( k - h, om1, dummy );
-      const double fd = ( om2 - om1 ) / ( 2.0 * h );
-      throwExceptionOnFailure( std::abs( fd - dop ) < 1e-5 * std::max( 1.0, std::abs( dop ) ),
-                               "DufourModel G-13: dOmega_s disagrees with the finite difference "
-                               "(analytic " +
-                                 std::to_string( dop ) + " vs " + std::to_string( fd ) +
-                                 ") at kappa_bar = " + std::to_string( k ) + ", beta = " + std::to_string( beta ) +
-                                 " in " + std::string( __PRETTY_FUNCTION__ ) );
-    }
-  }
-}
-
-// G-14: the AREA int(1-omega_s) dkappa_bar -- which Gf is proportional to -- must hit the values the
-// calibration relies on, and a negative beta must be REFUSED (it would heal damage).
-void testBetaShrinksTheArea()
-{
-  const double epsF = 1.75;
-  auto         area = [&]( double beta ) {
-    const std::vector< double > c = withBeta( beta );
-    DufourModel                 mat( c.data(), static_cast< int >( c.size() ), elLabel );
-    const double                K = 80.0;
-    const int                   N = 800000;
-    double                      s = 0.0, om, dom;
-    for ( int i = 0; i < N; ++i ) {
-      mat.softening( ( i + 0.5 ) * K / N, om, dom );
-      s += ( 1.0 - om ) * K / N;
-    }
-    return s;
-  };
-  throwExceptionOnFailure( checkIfEqual( area( 0.0 ), epsF, 1e-3 ),
-                           "DufourModel G-14: the beta = 0 area must be epsF = 1.75, got " +
-                             std::to_string( area( 0.0 ) ) + " in " + std::string( __PRETTY_FUNCTION__ ) );
-  // beta values derived from the measured Gf = 2.890 N/mm: area = 1.75 * Gf_target / 2.890
-  const double a11 = area( 11.266 ), a39 = area( 3.859 );
-  throwExceptionOnFailure( std::abs( a11 - 1.75 * 0.65 / 2.890 ) < 0.01,
-                           "DufourModel G-14: beta = 11.266 must give the area for Gf = 0.65 N/mm "
-                           "(0.3936), got " +
-                             std::to_string( a11 ) + " in " + std::string( __PRETTY_FUNCTION__ ) );
-  throwExceptionOnFailure( std::abs( a39 - 1.75 * 1.00 / 2.890 ) < 0.01,
-                           "DufourModel G-14: beta = 3.859 must give the area for Gf = 1.00 N/mm "
-                           "(0.6055), got " +
-                             std::to_string( a39 ) + " in " + std::string( __PRETTY_FUNCTION__ ) );
-  throwExceptionOnFailure( a11 < a39 && a39 < area( 0.0 ),
-                           "DufourModel G-14: larger beta must give a SMALLER area in " +
-                             std::string( __PRETTY_FUNCTION__ ) );
-  bool refused = false;
-  try {
-    const std::vector< double > bad = withBeta( -1.0 );
-    DufourModel                 m2( bad.data(), static_cast< int >( bad.size() ), elLabel );
-  }
-  catch ( const std::invalid_argument& ) {
-    refused = true;
-  }
-  throwExceptionOnFailure( refused,
-                           "DufourModel G-14: a NEGATIVE beta must be refused (damage would "
-                           "heal) in " +
-                             std::string( __PRETTY_FUNCTION__ ) );
-}
-
-// G-15..G-17: LOCALIZING GRADIENT DAMAGE (Poh & Sun 2017), interaction function g(omega_f).
-//   nonlocalradius = ld * sqrt( g ),  g(0) = 1, g(1) = R.
-std::vector< double > withLoc( double R, double eta )
-{
-  std::vector< double > c = withBeta( 0.0 ); // beta off: this must be an independent mechanism
-  c.push_back( R );
-  c.push_back( eta );
-  return c;
-}
-
-// G-15: R = 0 (and absent) must give g == 1 for EVERY omega_f -- i.e. the conventional gradient
-// model, bit for bit. This is the property that makes the mechanism inert on the Arcan PEAKS, where
-// the measured fraction of cells past D = 1 is 0.0% / 0.0% / 1.1%.
-void testLocalizingOffIsIdentity()
-{
-  for ( auto c : { withBeta( 0.0 ), withLoc( 0.0, 0.0 ), withLoc( 0.0, 5.0 ) } ) {
-    DufourModel mat( c.data(), static_cast< int >( c.size() ), elLabel );
-    for ( double w : { 0.0, 0.01, 0.3, 0.7, 0.999, 1.0 } )
-      throwExceptionOnFailure( checkIfEqual( mat.interactionG( w ), 1.0, 1e-15 ),
-                               "DufourModel G-15: with R = 0 the interaction must be EXACTLY 1 at "
-                               "omega_f = " +
-                                 std::to_string( w ) + " (got " + std::to_string( mat.interactionG( w ) ) + ") in " +
-                                 std::string( __PRETTY_FUNCTION__ ) );
-  }
-}
-
-// G-16: the end points and monotonicity. g(0) = 1 EXACTLY is what guarantees undamaged material is
-// untouched; g(1) = R EXACTLY is what bounds the collapse.
-void testLocalizingEndpointsAndMonotone()
-{
-  for ( double R : { 0.05, 0.3, 0.5, 1.0 } )
-    for ( double eta : { 0.0, 1.0, 5.0, 20.0 } ) {
-      std::vector< double > c = withLoc( R, eta );
-      DufourModel           mat( c.data(), static_cast< int >( c.size() ), elLabel );
-      throwExceptionOnFailure( checkIfEqual( mat.interactionG( 0.0 ), 1.0, 1e-12 ),
-                               "DufourModel G-16: g(0) must be exactly 1 (R = " + std::to_string( R ) +
-                                 ", eta = " + std::to_string( eta ) + ") in " + std::string( __PRETTY_FUNCTION__ ) );
-      throwExceptionOnFailure( checkIfEqual( mat.interactionG( 1.0 ), R, 1e-12 ),
-                               "DufourModel G-16: g(1) must be exactly R = " + std::to_string( R ) + ", got " +
-                                 std::to_string( mat.interactionG( 1.0 ) ) + " in " +
-                                 std::string( __PRETTY_FUNCTION__ ) );
-      double prev = 2.0;
-      for ( int i = 0; i <= 500; ++i ) {
-        const double w = i / 500.0, g = mat.interactionG( w );
-        throwExceptionOnFailure( g <= prev + 1e-14 && g >= R - 1e-12 && g <= 1.0 + 1e-12,
-                                 "DufourModel G-16: g must decrease monotonically and stay in [R,1]; "
-                                 "failed at omega_f = " +
-                                   std::to_string( w ) + " (g = " + std::to_string( g ) +
-                                   ", R = " + std::to_string( R ) + ") in " + std::string( __PRETTY_FUNCTION__ ) );
-        prev = g;
-      }
-      // clamped outside [0,1] rather than extrapolating
-      throwExceptionOnFailure( checkIfEqual( mat.interactionG( -1.0 ), 1.0, 1e-12 ) &&
-                                 checkIfEqual( mat.interactionG( 2.0 ), R, 1e-12 ),
-                               "DufourModel G-16: omega_f outside [0,1] must be CLAMPED in " +
-                                 std::string( __PRETTY_FUNCTION__ ) );
-    }
-}
-
-// G-17: omegaFOfDriver must agree with the omega_f the damage law itself uses, and the gate must be
-// exactly inert below initiation (D <= 1) -- that is what keeps the Arcan peaks untouched.
-void testLocalizingGateIsInertBeforeInitiation()
-{
-  std::vector< double > c = withLoc( 0.3, 5.0 );
-  DufourModel           mat( c.data(), static_cast< int >( c.size() ), elLabel );
-  // Do NOT hard-code dF: recover it FROM the function and require every D to imply the SAME one.
-  // That tests the functional form 1-exp(-(D-1)/dF) without depending on the test card's value,
-  // which is how the first version of this test broke (it assumed 0.3; the card carries 0.1).
-  const double dF = -( 1.5 - 1.0 ) / std::log( 1.0 - mat.omegaFOfDriver( 1.5 ) );
-  for ( double D : { 0.0, 0.5, 0.99, 1.0 } )
-    throwExceptionOnFailure( checkIfEqual( mat.omegaFOfDriver( D ), 0.0, 1e-15 ) &&
-                               checkIfEqual( mat.interactionG( mat.omegaFOfDriver( D ) ), 1.0, 1e-15 ),
-                             "DufourModel G-17: below initiation (D = " + std::to_string( D ) +
-                               ") omega_f must be 0 and the interaction EXACTLY 1 in " +
-                               std::string( __PRETTY_FUNCTION__ ) );
-  throwExceptionOnFailure( dF > 0.0 && dF < 10.0,
-                           "DufourModel G-17: the dF recovered from omegaFOfDriver is implausible (" +
-                             std::to_string( dF ) + ") in " + std::string( __PRETTY_FUNCTION__ ) );
-  for ( double D : { 1.001, 1.1, 1.5, 3.0 } ) {
-    const double expect = 1.0 - std::exp( -( D - 1.0 ) / dF );
-    throwExceptionOnFailure( checkIfEqual( mat.omegaFOfDriver( D ), expect, 1e-10 ),
-                             "DufourModel G-17: omega_f is not 1-exp(-(D-1)/dF) with a SINGLE dF; at "
-                             "D = " +
-                               std::to_string( D ) + " it gives " + std::to_string( mat.omegaFOfDriver( D ) ) +
-                               " but the dF implied at "
-                               "D = 1.5 predicts " +
-                               std::to_string( expect ) + ", in " + std::string( __PRETTY_FUNCTION__ ) );
-    throwExceptionOnFailure( mat.interactionG( mat.omegaFOfDriver( D ) ) < 1.0,
-                             "DufourModel G-17: past initiation the interaction must have COLLAPSED "
-                             "below 1 at D = " +
-                               std::to_string( D ) + " in " + std::string( __PRETTY_FUNCTION__ ) );
-  }
-  // R outside [0,1] and negative eta must be refused
-  int refused = 0;
-  for ( auto bad : { withLoc( -0.1, 5.0 ), withLoc( 1.5, 5.0 ), withLoc( 0.3, -1.0 ) } ) {
-    try {
-      DufourModel m2( bad.data(), static_cast< int >( bad.size() ), elLabel );
-    }
-    catch ( const std::invalid_argument& ) {
-      ++refused;
-    }
-  }
-  throwExceptionOnFailure( refused == 3,
-                           "DufourModel G-17: R < 0, R > 1 and eta < 0 must all be refused (only " +
-                             std::to_string( refused ) + " of 3 were) in " + std::string( __PRETTY_FUNCTION__ ) );
-}
-
 // G-10: the COMPRESSION BRANCH. g must be < 1 and FALLING for T < 0, whatever the tension
 // coefficients do. Without it the calibrated split form gives g(-0.29) = 16.6 (ledger 28.6).
 void testCompressionBranchDecays()
@@ -976,12 +550,13 @@ void testCompressionBranchDecays()
   c[20]                   = 1.660;
   c.push_back( 0.0 );
   c.push_back( 0.0 );
-  c.push_back( 0.0 );    // b0,b1,b2 off
+  c.push_back( 0.0 );  // b0,b1,b2 off
   c.push_back( 0.0 );
-  c.push_back( 0.0 );    // kdotRef, s
-  c.push_back( 0.0 );    // dsInf -> 1
-  c.push_back( 22.020 ); // c4
-  c.push_back( 1.10 );   // TCap
+  c.push_back( 0.0 );  // kdotRef, s
+  c.push_back( 0.0 );  // dsInf -> 1
+  c.push_back( 0.0 );  // c4 RETIRED -- must be zero; the compression branch is E = 1.3 T
+                       // and does not depend on the tension coefficients anyway
+  c.push_back( 1.10 ); // TCap
   DufourModel mat( c.data(), static_cast< int >( c.size() ), elLabel );
 
   // compression: strictly below 1 and monotonically falling as T decreases
@@ -1008,12 +583,12 @@ void testCompressionBranchDecays()
 
 // V-5: pin the persistent state layout. The viscoelastic block is sized for nMaxwellMax = 7
 // branches unconditionally, so that the layout stays static and independent of the card:
-//   base    Fp(9) + alphaP + omega + damageDriver + alphaPBar + alphaD + chiF          = 15
+//   base    Fp(9) + alphaP + omega + damageDriver + alphaPBar                          = 13
 //   visco   PK2Ref(9) + veDev(7 x 9) + veVol(7 x 1)                                    = 79
 void testStateVarLayout()
 {
   DufourModel mat( propsVisco.data(), static_cast< int >( propsVisco.size() ), elLabel );
-  throwExceptionOnFailure( checkIfEqual( static_cast< double >( mat.getNumberOfRequiredStateVars() ), 94.0, 1e-12 ),
+  throwExceptionOnFailure( checkIfEqual( static_cast< double >( mat.getNumberOfRequiredStateVars() ), 92.0, 1e-12 ),
                            "DufourModel V-5: unexpected number of required state vars in " +
                              std::string( __PRETTY_FUNCTION__ ) );
 }
@@ -1025,7 +600,6 @@ int main()
     testStressSymmetry,
     testPureRotation,
     testAlgorithmicTangent,
-    testAlgorithmicTangentStressDrivenDamage,
     testViscoelasticTangentFirstIncrement,
     testViscoelasticTangentSecondIncrement,
     testViscoelasticReducesToBaseModel,
@@ -1038,16 +612,7 @@ int main()
     testRateFactorAndSentinel,
     testNoReferenceRateMeansNoRateDependence,
     testAmbiguousShapeCardsAreRefused,
-    testDsInfSaturatesTheSofteningVariable,
-    testQuarticExponentAndCap,
     testCompressionBranchDecays,
-    testBetaZeroReproducesExponential,
-    testBetaPreservesInitialSlope,
-    testBetaDerivativeIsExact,
-    testBetaShrinksTheArea,
-    testLocalizingOffIsIdentity,
-    testLocalizingEndpointsAndMonotone,
-    testLocalizingGateIsInertBeforeInitiation,
   };
 
   executeTestsAndCollectExceptions( tests );

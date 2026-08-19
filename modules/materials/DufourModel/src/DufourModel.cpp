@@ -39,11 +39,7 @@ namespace Marmot::Materials {
       // dependence) so that only cSW has to be supplied to activate the driver.
       cSW( nMaterialProperties > 20 ? materialProperties[20] : 0.0 ),
       bSW( nMaterialProperties > 21 ? materialProperties[21] : 1e6 ),
-      kSW( nMaterialProperties > 22 ? materialProperties[22] : 0.0 ),
       dF( nMaterialProperties > 23 ? materialProperties[23] : 1.0 ),
-      volDriver( nMaterialProperties > 24 ? materialProperties[24] : 0.0 ),
-      Xt( nMaterialProperties > 25 ? materialProperties[25] : 0.0 ),
-      Xc( nMaterialProperties > 26 ? materialProperties[26] : 0.0 ),
       // cubic-exponent Rice-Tracey weight: the three entries AFTER the Prony triplets, in the
       // order (T^2, T^3, T). All absent -> 0 -> the published single-branch exp( 1.3 T ).
       swdfmC2( swdfmExtra( materialProperties, nMaterialProperties, 0 ) ),
@@ -56,15 +52,10 @@ namespace Marmot::Materials {
       swdfmKdotRef( swdfmExtra( materialProperties, nMaterialProperties, 6 ) ),
       swdfmS( swdfmExtra( materialProperties, nMaterialProperties, 7 ) ),
       // saturation value of the SOFTENING variable (Nguyen's Ds_inf); 0/absent -> 1.0
-      dsInf( swdfmExtra( materialProperties, nMaterialProperties, 8 ) ),
       // quartic term of the exponent, and the triaxiality above which g is held constant
-      swdfmC4( swdfmExtra( materialProperties, nMaterialProperties, 9 ) ),
       swdfmTCap( swdfmExtra( materialProperties, nMaterialProperties, 10 ) ),
       // quadratic acceleration of the softening tail; 0/absent -> the plain exponential
-      swdfmBeta( swdfmExtra( materialProperties, nMaterialProperties, 11 ) ),
       // localizing gradient damage: floor R of the interaction function, and its steepness eta
-      swdfmLocR( swdfmExtra( materialProperties, nMaterialProperties, 12 ) ),
-      swdfmLocEta( swdfmExtra( materialProperties, nMaterialProperties, 13 ) ),
       // optional generalized-Maxwell entries from 27 on; absent or nMaxwell = 0 reproduces the
       // purely hyperelastic-viscoplastic model exactly.
       nMaxwell( nMaterialProperties > 27 ? static_cast< int >( materialProperties[27] ) : 0 ),
@@ -75,26 +66,44 @@ namespace Marmot::Materials {
       throw std::invalid_argument( "DufourModel: the sum of the Maxwell relative moduli must stay below 1, "
                                    "otherwise the equilibrium branch has non-positive stiffness" );
 
-    // LOCALIZING-INTERACTION GATE. R is a FRACTION of ld^2, so it must lie in (0,1]; R > 1 would
-    // GROW the interaction with damage, and R < 0 is meaningless. R exactly 0 collapses the operator
-    // completely and destroys regularisation, which is the standard critique of localizing models --
-    // refuse it and require a positive floor.
-    if ( swdfmLocR < 0.0 || swdfmLocR > 1.0 )
-      throw std::invalid_argument( "DufourModel: the localizing interaction floor R must lie in "
-                                   "[0,1] ( 0 or absent = constant interactions, i.e. the "
-                                   "conventional gradient model ); R > 1 would make interactions "
-                                   "GROW with damage" );
-    if ( swdfmLocEta < 0.0 )
-      throw std::invalid_argument( "DufourModel: the localizing interaction steepness eta must be "
-                                   "positive ( 0 or absent -> default 5 )" );
+    // RETIRED SLOTS. The positions below are DELIBERATELY still read so that every existing deck
+    // keeps parsing at the same offsets -- the card is positional and renumbering it would turn
+    // every archived deck into a plausible-looking wrong answer. The mechanisms themselves were
+    // eliminated by measurement; see Arcan_test_model/MATERIAL_CARD_LAYOUT.md for the evidence.
+    // A deck that sets one of them is an OLD deck expecting different behaviour, so refuse it.
+    {
+      struct Retired {
+        int         which;
+        const char* name;
+        const char* why;
+      };
+      const Retired retiredFixed[] =
+        { { 22, "kSW", "Lode-angle term: 800k trial cards, best 1.6 % vs 1.4 % without" },
+          { 24, "volDriver", "drive D from plastic dilatation instead of alphaP" },
+          { 25,
+            "Xt",
+            "paraboloidal stress-onset surface: no surface fits the 3 Arcan points and the SLJ never reaches onset" },
+          { 26, "Xc", "paraboloidal stress-onset surface" } };
+      for ( const auto& r : retiredFixed )
+        if ( nMaterialProperties > r.which && materialProperties[r.which] != 0.0 )
+          throw std::invalid_argument( std::string( "DufourModel: card slot " ) + std::to_string( r.which ) + " ( " +
+                                       r.name + " ) is RETIRED and must be 0 or absent. " + r.why +
+                                       ". See Arcan_test_model/MATERIAL_CARD_LAYOUT.md." );
 
-    // SOFTENING-ACCELERATION GATE. beta only enters through x = kappa_bar/epsF, so it is
-    // dimensionless and a negative value would make omega_s NON-MONOTONE (damage healing) and
-    // eventually drive it below zero. Refuse it.
-    if ( swdfmBeta < 0.0 )
-      throw std::invalid_argument( "DufourModel: swdfmBeta must be >= 0 ( 0 or absent = the plain "
-                                   "exponential softening tail ); a negative value makes omega_s "
-                                   "non-monotone, i.e. damage would HEAL" );
+      const Retired retiredExtra[] =
+        { { 8, "dsInf", "softening saturation Ds_inf" },
+          { 9,
+            "swdfmC4",
+            "quartic exponent term: 2.40 % of SLJ cells past D=1 against the cubic 2.60 %, 4.4 % needed" },
+          { 11, "swdfmBeta", "accelerated softening tail" },
+          { 12, "swdfmLocR", "Poh-Sun localizing gradient: no-op on the SLJ, and incompatible with a coarse mesh" },
+          { 13, "swdfmLocEta", "Poh-Sun localizing gradient steepness" } };
+      for ( const auto& r : retiredExtra )
+        if ( swdfmExtra( materialProperties, nMaterialProperties, r.which ) != 0.0 )
+          throw std::invalid_argument( std::string( "DufourModel: card slot swdfmExtra[" ) + std::to_string( r.which ) +
+                                       "] ( " + r.name + " ) is RETIRED and must be 0 or absent. " + r.why +
+                                       ". See Arcan_test_model/MATERIAL_CARD_LAYOUT.md." );
+    }
 
     // LEGACY-DECK GATE. The two entries after the Prony triplets used to be the two-branch
     // ( swdfmT0, swdfmExp2 ) pair; they are now ( swdfmC2, swdfmC3 ) of the cubic exponent. A deck
@@ -125,25 +134,6 @@ namespace Marmot::Materials {
       throw std::invalid_argument( "DufourModel: the card carries BOTH the cubic exponent "
                                    "( c1, c2, c3 ) and the monotone quintic ( b0, b1, b2 ). They are "
                                    "alternatives, not a sum -- clear one of the two." );
-
-    // A quartic exponent WITHOUT a cap is the butt-joint trap: g(1.5) = 9e6 on the calibrated
-    // coefficients, so any geometry reaching a triaxiality above the calibration range fails at
-    // first load. Refuse it rather than let it happen silently.
-    if ( swdfmC4 != 0.0 && swdfmTCap <= 0.0 )
-      throw std::invalid_argument( "DufourModel: a quartic exponent coefficient was given at "
-                                   "[37 + 3 nMaxwell] but no extrapolation cap at [38 + 3 nMaxwell]. "
-                                   "g is calibrated only up to T = 1.087 and the quartic explodes "
-                                   "beyond it (g = 493 at T = 1.3, 9e6 at 1.5). Set the cap "
-                                   "(calibrated: 1.10)." );
-
-    // Ds_inf above 1 would let the softening variable exceed full degradation on its own, which is
-    // exactly what the saturation is there to prevent.
-    if ( dsInf > 1.0 )
-      throw std::invalid_argument( "DufourModel: Ds_inf (entry [36 + 3 nMaxwell]) must lie in (0, 1]. "
-                                   "It is the SATURATION value of the softening variable; above 1 the "
-                                   "bulk softening could fail the material by itself, which Nguyen's "
-                                   "formulation forbids. Use 0 or omit for the unsaturated legacy "
-                                   "behaviour." );
   }
 
   void DufourModel::computeStress( ConstitutiveResponse< 3 >& response,
@@ -162,16 +152,12 @@ namespace Marmot::Materials {
     const double    driverOld    = driver;
     double&         alphaPBar    = stateVars->alphaPBar;
     const double    alphaPBarOld = alphaPBar;
-    double&         alphaD       = stateVars->alphaD;
-    const double    alphaDOld    = alphaD;
-    double&         chiF         = stateVars->chiF;
-    const double    chiFOld      = chiF;
 
     // LOCALIZING GRADIENT DAMAGE (Poh & Sun 2017): the interaction length COLLAPSES in material
     // that has already started to fail, so a forming crack stops transferring energy into its
     // neighbours. Gated on the STORED driver (lagged one increment) so l is constant within the
     // increment and the element tangent stays exact. R = 0 / absent -> g == 1 -> unchanged.
-    response.nonlocalradius = ld * std::sqrt( interactionG( omegaFOfDriver( driverOld ) ) );
+    response.nonlocalradius = ld;
     double alphaP_nonlocal  = deformation.A;
 
     // Published to the Maxwell update, which is reached through computeMandelStress from inside
@@ -234,13 +220,12 @@ namespace Marmot::Materials {
       Fe              = X.segment( 0, 9 ).data();
       dFp             = Fastor::inverse( Fe ) % FeTrial;
       alphaP          = X( 9 );
-      response.L      = volDriver != 0.0 ? alphaD : alphaP;
+      response.L      = alphaP;
       Tensor33d FpNew = dFp % Fp;
       memcpy( Fp.data(), FpNew.data(), 9 * sizeof( double ) );
 
       using namespace ContinuumMechanics;
       double      psi_, dOmega_dAlphaP_local, dOmega_dAlphaP_nonlocal;
-      Tensor33d   dOmega_dTau;
       Tensor33d   Ce, dPsi_dCe, tau_eff;
       Tensor3333d dCe_dFe, d2Psi_dCedCe, dTau_dPK2_eff, dTau_dFe_partial_eff;
       std::tie( Ce, dCe_dFe ) = DeformationMeasures::FirstOrderDerived::rightCauchyGreen( Fe );
@@ -267,14 +252,7 @@ namespace Marmot::Materials {
                 dOmega_dAlphaP_local,
                 dOmega_dAlphaP_nonlocal,
                 driver,
-                alphaPBar,
-                chiF,
-                dOmega_dTau ) = computeOmega( volDriver != 0.0 ? alphaD : alphaP,
-                                              alphaP_nonlocal,
-                                              tau_eff,
-                                              driverOld,
-                                              alphaPBarOld,
-                                              chiFOld );
+                alphaPBar ) = computeOmega( alphaP, alphaP_nonlocal, tau_eff, driverOld, alphaPBarOld );
 
       response.tau                  = tau_eff * ( 1.0 - omega );
       response.rho                  = density;
@@ -318,50 +296,16 @@ namespace Marmot::Materials {
 
       Tensor33d dAlphaP_local_dF = Tensor33d( Vector9d( dXdDeformation.block< 1, 9 >( 9, 0 ).transpose() ).data() );
 
-      // dilatant plastic volume: ln Jp = ln det F - ln det Fe  (since Jp = J / Je), so
-      // d(ln Jp)/dF = F^-T - Fe^-T : dFe/dF, exact from the same sensitivity solve.
-      const double lnJpOld = std::log( std::max( Fastor::determinant( FpOld ), 1e-12 ) );
-      const double lnJpNew = std::log( std::max( Fastor::determinant( deformation.F ), 1e-12 ) ) -
-                             std::log( std::max( Fastor::determinant( Fe ), 1e-12 ) );
-      const double dAlphaD = std::max( lnJpNew - lnJpOld, 0.0 ); // clamp: damage is irreversible
-      alphaD               = alphaDOld + dAlphaD;
-      Tensor33d dAlphaD_dF = Tensor33d( 0.0 );
-      if ( dAlphaD > 0.0 ) {
-        const Tensor33d FeinvT = Fastor::transpose( Fastor::inverse( Fe ) );
-        // dAlphaD_dF(K,L) = Finv_T(K,L) - FeinvT(i,j) * dFe_dF(i,j,K,L)   (explicit, unambiguous)
-        for ( int K = 0; K < 3; K++ ) {
-          for ( int L = 0; L < 3; L++ ) {
-            double acc = Finv_T( K, L );
-            for ( int i = 0; i < 3; i++ )
-              for ( int j = 0; j < 3; j++ )
-                acc -= FeinvT( i, j ) * dFe_dF( i, j, K, L );
-            dAlphaD_dF( K, L ) = acc;
-          }
-        }
-      }
+      // the local driving strain IS alphaP now that the dilatant-volume driver is gone
+      const Tensor33d& dLocal_dF = dAlphaP_local_dF;
 
-      const Tensor33d& dLocal_dF = volDriver != 0.0 ? dAlphaD_dF : dAlphaP_local_dF;
-
-      // stress-driven part of omega: dTau/dF gains  -tau_eff (x) ( dOmega/dTau : dTau_eff/dF )
-      Tensor33d dOmegaStress_dF( 0.0 );
-      for ( int K = 0; K < 3; K++ )
-        for ( int L = 0; L < 3; L++ ) {
-          double acc = 0.0;
-          for ( int i = 0; i < 3; i++ )
-            for ( int j = 0; j < 3; j++ )
-              acc += dOmega_dTau( i, j ) * dTau_dF_eff( i, j, K, L );
-          dOmegaStress_dF( K, L ) = acc;
-        }
-
-      tangents.dTau_dF = ( 1 - omega ) * dTau_dF_eff - dOmega_dAlphaP_local * Fastor::outer( tau_eff, dLocal_dF ) -
-                         Fastor::outer( tau_eff, dOmegaStress_dF );
+      tangents.dTau_dF = ( 1 - omega ) * dTau_dF_eff - dOmega_dAlphaP_local * Fastor::outer( tau_eff, dLocal_dF );
       tangents.dTau_dA = -tau_eff * dOmega_dAlphaP_nonlocal;
       tangents.dL_dF   = dLocal_dF;
     }
     else {
       using namespace Marmot::ContinuumMechanics;
       double      psi_, dOmega_dAlphaP_local, dOmega_dAlphaP_nonlocal;
-      Tensor33d   dOmega_dTau;
       Tensor33d   Ce, dPsi_dCe, tau_eff;
       Tensor3333d dCe_dFe, d2Psi_dCedCe, dTau_dPK2_eff, dTau_dFe_partial_eff;
       std::tie( Ce, dCe_dFe ) = DeformationMeasures::FirstOrderDerived::rightCauchyGreen( Fe );
@@ -384,19 +328,12 @@ namespace Marmot::Materials {
                 dOmega_dAlphaP_local,
                 dOmega_dAlphaP_nonlocal,
                 driver,
-                alphaPBar,
-                chiF,
-                dOmega_dTau ) = computeOmega( volDriver != 0.0 ? alphaDOld : alphaPOld,
-                                              alphaP_nonlocal,
-                                              tau_eff,
-                                              driverOld,
-                                              alphaPBarOld,
-                                              chiFOld );
+                alphaPBar ) = computeOmega( alphaPOld, alphaP_nonlocal, tau_eff, driverOld, alphaPBarOld );
 
       response.tau                  = tau_eff * ( 1.0 - omega );
       response.rho                  = density;
       response.elasticEnergyDensity = psi_;
-      response.L                    = volDriver != 0.0 ? alphaD : alphaP;
+      response.L                    = alphaP;
 
       // compute tangent operator
       Tensor3333d dPK2_dFe    = einsum< ijKL, KLMN >( dPK2_dCe_eff, dCe_dFe );
@@ -408,17 +345,7 @@ namespace Marmot::Materials {
 
       Tensor33d dAlphaP_local_dF = Tensor33d( 0.0 );
 
-      Tensor33d dOmegaStress_dF( 0.0 );
-      for ( int K = 0; K < 3; K++ )
-        for ( int L = 0; L < 3; L++ ) {
-          double acc = 0.0;
-          for ( int i = 0; i < 3; i++ )
-            for ( int j = 0; j < 3; j++ )
-              acc += dOmega_dTau( i, j ) * dTau_dF_eff( i, j, K, L );
-          dOmegaStress_dF( K, L ) = acc;
-        }
-
-      tangents.dTau_dF = ( 1 - omega ) * dTau_dF_eff - Fastor::outer( tau_eff, dOmegaStress_dF );
+      tangents.dTau_dF = ( 1 - omega ) * dTau_dF_eff;
       tangents.dTau_dA = -tau_eff * dOmega_dAlphaP_nonlocal;
       tangents.dL_dF   = dAlphaP_local_dF;
     }
@@ -465,8 +392,6 @@ namespace Marmot::Materials {
     // explicit: the accumulated driver and the previous weighted alphaP must start at zero
     stateVars->damageDriver = 0.0;
     stateVars->alphaPBar    = 0.0;
-    stateVars->alphaD       = 0.0;
-    stateVars->chiF         = 0.0;
     // viscoelasticity: unstressed reference and quiescent Maxwell branches
     stateVars->PK2Ref.zeros();
     for ( int i = 0; i < nMaxwellMax * 9; i++ )

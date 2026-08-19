@@ -76,25 +76,7 @@ namespace Marmot::Materials {
     // Crack initiation at D = 1; dF then governs how fast omega grows past initiation.
     //
     // cSW = 0 reproduces the unscaled original model EXACTLY (see computeOmega).
-    const double cSW, bSW, kSW, dF;
-
-    // volDriver = 1 -> damage is driven by the DILATANT PLASTIC VOLUME alphaD = int <d ln Jp>
-    //             instead of the equivalent plastic strain alphaP, and the nonlocal field
-    //             solves for alphaD. Jp = J / Je, so ln Jp = ln det F - ln det Fe (exact).
-    //             Rationale: crazing in glassy polymers is dilatational, shear yielding is not,
-    //             so tr(eps_p) discriminates stress states on its own. Measured ratio
-    //             lnJp/alphaP_bar: 1.22 (Arcan 0 deg) / 1.08 (45) / 0.095 (90) - a factor 13.
-    //             volDriver = 0 -> unchanged behaviour.
-    const double volDriver;
-
-    // Nguyen-type STRESS-BASED failure onset (optional card entries 26-27). Paraboloidal
-    // (Melro) surface in the invariants of the EFFECTIVE Kirchhoff stress:
-    //   phiBar = [ 3 J2 + ( Xc - Xt ) I1 ] / ( Xc Xt ),   onset at phiBar = 1
-    // Xt, Xc are the tensile / compressive FAILURE stresses. Verified: phiBar = 1 at uniaxial
-    // tension sigma = Xt and at uniaxial compression sigma = -Xc.
-    // A RUNNING MAXIMUM is used because the nominal stress falls during softening; the
-    // effective stress plus the max make the driver monotone. Xt = 0 disables this branch.
-    const double Xt, Xc;
+    const double cSW, bSW, dF;
 
     // ------------------------------------------------------------------------------------------
     // CUBIC-EXPONENT Rice-Tracey weight in the SWDFM driver -- OPTIONAL, the three card entries
@@ -207,134 +189,7 @@ namespace Marmot::Materials {
     // geometry a damage rate thousands of times too high and fail it at first load. With
     // swdfmTCap = 1.10 the model instead HOLDS the last value it has evidence for, which is a
     // statement about the calibration range rather than an invented trend.
-    const double swdfmC4, swdfmTCap;
-
-    // ------------------------------------------------------------------------------------------
-    // Ds_inf -- the SATURATION VALUE of the softening variable. OPTIONAL, the entry after the
-    // shape/rate block, i.e. [36 + 3 nMaxwell]. 0 or absent -> 1.0, the previous behaviour.
-    //
-    //   omega_s = Ds_inf * ( 1 - exp( -kappa_bar / epsF ) )
-    //
-    // WHY THIS EXISTS. The two-variable structure is Nguyen, Lani, Pardoen, Morelle & Noels,
-    // Int. J. Solids Struct. 96 (2016) 192-216, eq. (79)-(81):
-    //
-    //   Ds = Ds_inf [ 1 - exp( -Hs/(zeta_s+1) (chi_s - chi_s0)^(zeta_s+1) ) ]
-    //
-    // and the paper is explicit about what Ds_inf is FOR: "When Ds reaches its saturation value,
-    // the rehardening stage sets in since the hardening of the undamaged part is still developing.
-    // As a result, THE EVOLUTION OF Ds DOES NOT LEAD TO THE MATERIAL FAILURE." Ds is bounded bulk
-    // softening (shear transformation zones); only Df, the failure variable, may reach 1.
-    //
-    // This implementation had Ds_inf = 1, chi_s0 = 0, zeta_s = 0 -- i.e. THREE of Nguyen's four
-    // features off, and the important one missing: omega_s could grow to 1 and fail the material by
-    // itself, which the source formulation forbids.
-    //
-    // WHAT IT EXPLAINS. omega_s at each specimen's measured failure point, on kappa_bar_f from
-    // ledger 23.2: 0 deg 5 %, 45 deg 11 %, SLJ 8 %, **90 deg 26 %**, because kappa_bar_f spans 7.7x
-    // (0.094 to 0.528). So at 90 deg a quarter of the degradation at failure is the UNBOUNDED
-    // softening variable, which is gradual by construction -- 90 deg does not fracture in this
-    // model, it creeps down through omega_s. That is the 0-vs-90 deg asymmetry that no amount of
-    // g(T), cSW, dF, ld or epsF tuning could reach, because the wrong variable was doing the work.
-    //
-    // COUPLING TO WATCH. omega_s is what balances the b5 rehardening to produce the Arcan force
-    // PLATEAU. Bounding it makes the plateau RISE, so Ds_inf and b5 are not independent: judge a
-    // Ds_inf run on whether the DROP becomes sharp and early, then compensate the plateau with b5.
-    //
-    // epsF IS NOT AFFECTED and must stay at 1.75: Dufour fitted it by least squares on the
-    // experimental DIC D-vs-kappa cloud (thesis Fig. 2.11a / IJAA 2016 Fig. 10), a material-point
-    // measurement. Ds_inf is a separate parameter of the same source formulation, not a refit of his.
-    //
-    // NOTE FOR POST-PROCESSING: the kappa_bar recovery used by `band_width.py` becomes
-    // kappa_bar = -epsF ln( 1 - omega_s/Ds_inf ), not -epsF ln( 1 - omega_s ).
-    const double dsInf;
-
-    /// Saturation value actually used; 0 or absent means "no saturation", i.e. the previous 1.0.
-    double dsInfEff() const { return dsInf > 0.0 ? dsInf : 1.0; }
-
-    // SOFTENING TAIL ACCELERATION -- optional card entry, `which` = 11 (index 60 with 7 Prony terms).
-    //
-    //   omega_s = Ds_inf * [ 1 - exp( -x - swdfmBeta x^2 ) ],   x = kappa_bar / epsF
-    //
-    // swdfmBeta = 0 reproduces the previous law BIT FOR BIT.
-    //
-    // WHY. The card's fracture energy was MEASURED at Gf = 2.890 N/mm (ledger 29.24; validated to
-    // within 1.4% of the TDCB value 2.93, which was never used in the calibration), while the joint
-    // needs 0.65 (Dufour's own SLJ inverse fit) or 0.42 (the low-epsF card that matched the SLJ).
-    // Gf ~ ld * int( 1 - omega_s ) dkappa_bar, and for the plain exponential that integral is
-    // epsF = 1.75 with almost all of it in a tail extending to infinity. The quadratic term
-    // accelerates the approach to Ds_inf and cuts that area; beta is set from the MEASURED Gf.
-    //
-    // WHY THIS FORM AND NOT THE OBVIOUS ALTERNATIVES (all three were tried and rejected -- 29.30):
-    //   * lowering epsF steepens the softening from the FIRST increment, which drops the Arcan peak
-    //     forces (epsF 0.9 gave a 90 deg peak at 0.23 of measured). Rejected.
-    //   * renormalising a truncated exponential by Z = 1-exp(-cut/epsF) multiplies the INITIAL SLOPE
-    //     by 1/Z (2.58 at Gf 0.65), i.e. it is epsF = 0.678 in disguise -- the same rejected change
-    //     wearing a different name. Rejected.
-    //   * a HARD cutoff ( omega_s jumps to 1 at kappa_c ) preserves the slope but adds a SECOND
-    //     failure criterion, and it was measured to PRE-EMPT the SWDFM driver in all 700 cells of the
-    //     Arcan 90 deg specimen (which reaches kappa_bar = 0.559 before D = 1, against 0.10-0.20 for
-    //     every other specimen). It would also impose a 78% instantaneous stress drop. Rejected.
-    // This form has NONE of those defects: d omega_s / d kappa_bar at kappa_bar = 0 is exactly
-    // 1/epsF for ANY beta (the linear term alone survives), so epsF keeps the meaning Dufour fitted
-    // it with; it is smooth, so there is no cliff; and omega_s only ASYMPTOTES to Ds_inf, so no
-    // second failure criterion is introduced and nothing can pre-empt the driver.
-    //
-    // KNOWN COST, measured before implementing: the Arcan 90 deg specimen accumulates kappa_bar =
-    // 0.559 before D = 1 while everything else initiates at 0.10-0.20, so it absorbs ~5x more of any
-    // tail change than the SLJ does (ledger 29.31). Expect its damage state at failure to move a
-    // lot; cSW does NOT compensate (it acts on D, not on omega_s).
-    const double swdfmBeta;
-    // LOCALIZING GRADIENT DAMAGE -- optional card entries, `which` = 12 (R) and 13 (eta).
-    //
-    // Poh & Sun, "Localizing gradient damage model with decreasing interactions", IJNME 110(6):
-    // 503-522, 2017. The conventional operator  ld^2 grad^2 kappa_bar  becomes
-    //     g( omega_f ) * ld^2 grad^2 kappa_bar,
-    // and since the element consumes a LENGTH and squares it (l*l in the residual and k_AA), this is
-    // implemented as  nonlocalradius = ld * sqrt( g ).
-    //
-    //     g( w ) = [ ( 1 - R ) exp( -eta w ) + R - exp( -eta ) ] / [ 1 - exp( -eta ) ]
-    //     g( 0 ) = 1 exactly,  g( 1 ) = R exactly,  eta sets the steepness.
-    //
-    // WHY. Constant interactions let a failing band keep transferring energy into neighbours that
-    // must then be dragged through their own softening -- the "spurious damage growth" of Geers et
-    // al. 1998 / Simone et al. 2004. That is measured here: the omega 0.9 -> 0.1 transition on the
-    // SLJ is 1.0 mm at the force peak and 3.5 mm after it, against ld = 0.12 (ledger step-zero), and
-    // the model's fracture energy is the BULK value 2.890 N/mm where the joint needs 0.42-0.65
-    // (ledger 29.24). A forming crack should stop interacting with its surroundings; this one never
-    // does, so it pays bulk toughness forever.
-    //
-    // WHY GATED ON omega_f AND NOT omega. Measured fraction of cells past D = 1, i.e. with omega_f
-    // active: at the Arcan PEAKS 0.0% / 0.0% / 1.1% (0/45/90 deg), so g == 1 there and the
-    // calibrated peak forces cannot move. NOTE HOWEVER, and this is not what the proposal assumed:
-    // at the Arcan -10% CROSSINGS -- which IS the calibration metric -- the fractions are
-    // 35.6% / 81.4% / 32.6%. The gate therefore DOES fire inside the constrained data, the crossings
-    // will move EARLIER (collapsing ld raises kappa_bar toward the local value, since
-    // alphaP_nonlocal/alphaP_local is 0.38-0.69 in the Arcan), and the hard-gate bound on the
-    // ratios is ~0.92/0.89/0.82. R is the trade parameter, and 45 deg is the exposed angle, not
-    // 90 deg. Acceptance test: 45 deg >= 0.90 and all three within 5% of 0.99/0.95/1.00.
-    //
-    // LAGGED BY ONE INCREMENT: g is evaluated on the STORED driver (D_old), so l is constant within
-    // the increment and the existing tangent stays exact -- no dl/dA terms. Defensible as a probe
-    // because the arc-length solve already takes small increments.
-    //
-    // R = 0 or absent -> g == 1 identically -> previous behaviour, bit for bit.
-    // Keep R well above 0 on a first pass: g -> 0 exactly is the known regularisation-loss critique
-    // of localizing models, so the mesh-refinement protocol must be re-run once the band collapses.
-    const double swdfmLocR, swdfmLocEta;
-
-    /// True when the localizing interaction is switched on.
-    bool localizingOn() const { return swdfmLocR > 0.0; }
-
-    /** Poh & Sun interaction function. g(0) = 1, g(1) = swdfmLocR, monotonically decreasing. */
-    double interactionG( const double omega_f ) const
-    {
-      if ( !localizingOn() )
-        return 1.0;
-      const double eta = swdfmLocEta > 0.0 ? swdfmLocEta : 5.0;
-      const double e   = std::exp( -eta );
-      const double w   = std::min( std::max( omega_f, 0.0 ), 1.0 );
-      return ( ( 1.0 - swdfmLocR ) * std::exp( -eta * w ) + swdfmLocR - e ) / ( 1.0 - e );
-    }
+    const double swdfmTCap;
 
     /** omega_f from the driver. ONE definition, used both by computeOmega and by the lagged
      *  interaction gate, so the two cannot drift apart. */
@@ -349,11 +204,10 @@ namespace Marmot::Materials {
      */
     void softening( const double kbar, double& omega_s, double& dOmega_s ) const
     {
-      const double ds = dsInfEff();
-      const double x  = kbar / epsF;
-      const double E  = std::exp( -x - swdfmBeta * x * x );
-      omega_s         = ds * ( 1.0 - E );
-      dOmega_s        = ds * E * ( 1.0 + 2.0 * swdfmBeta * x ) / epsF;
+      const double x = kbar / epsF;
+      const double E = std::exp( -x );
+      omega_s        = 1.0 - E;
+      dOmega_s       = E / epsF;
     }
 
     inline const static double swdfmKdotMin = 1e-8;
@@ -377,8 +231,10 @@ namespace Marmot::Materials {
      * @param T     stress triaxiality, already clamped by the caller
      * @param kdot  d alphaPBar / dt of THIS increment; floored internally
      */
-    double swdfmLogG( const double T, const double kdot = 0.0 ) const
+    double swdfmLogG( const double T, const double kdot = 0.0, double* kdotDLogGDKdot = nullptr ) const
     {
+      if ( kdotDLogGDKdot )
+        *kdotDLogGDKdot = 0.0;
       // COMPRESSION BRANCH. A single polynomial cannot behave on both sides of T = 0: for T < 0 the
       // even powers stay positive while the odd ones flip, so the calibrated tension coefficients give
       // g(-0.29) = 16.6 -- damage 17x FASTER in compression than in pure shear. That destroyed Arcan
@@ -408,12 +264,20 @@ namespace Marmot::Materials {
       }
       else {
         const double c1 = swdfmC1 != 0.0 ? swdfmC1 : swdfmExponent;
-        E               = ( ( ( swdfmC4 * Tc + swdfmC3 ) * Tc + swdfmC2 ) * Tc + c1 ) * Tc;
+        E               = ( ( swdfmC3 * Tc + swdfmC2 ) * Tc + c1 ) * Tc;
       }
 
       if ( swdfmKdotRef > 0.0 ) {
         const double s = swdfmS < 0.0 ? n : swdfmS; // sentinel: tie the rate exponent to n
         E *= std::pow( std::max( kdot, swdfmKdotMin ) / swdfmKdotRef, -s );
+        // w = (kdot/kdotRef)^(-s)  =>  kdot dE/dkdot = -s E exactly. Reported so that the
+        // tangent can carry the rate sensitivity instead of omitting it: at the calibrated
+        // s = n = 0.0435 the omission was mild (w spans 1.7x over four decades) but at
+        // s >= 0.15 it makes the return map diverge (SLJ kC2s150 died at step 12).
+        // Above the floor the derivative of max(kdot, kdotMin) is 1; below it kdot is
+        // clamped, the increment is elastic and contributes nothing, so 0 is correct.
+        if ( kdotDLogGDKdot && kdot > swdfmKdotMin )
+          *kdotDLogGDKdot = -s * E;
       }
       return E;
     }
@@ -522,8 +386,6 @@ namespace Marmot::Materials {
         // Only used when c_eta != 0; both stay consistent with omega otherwise.
         { .name = "damageDriver", .length = 1 },
         { .name = "alphaPBar", .length = 1 },
-        { .name = "alphaD", .length = 1 },
-        { .name = "chiF", .length = 1 },
         // ---- viscoelasticity -------------------------------------------------------------
         // PK2Ref  : the hyperelastic (unrelaxed) PK2 stress of the last CONVERGED increment.
         //           The Maxwell recurrence is driven by its increment, so it has to persist.
@@ -542,8 +404,6 @@ namespace Marmot::Materials {
       double&                           omega;
       double&                           damageDriver;
       double&                           alphaPBar;
-      double&                           alphaD;
-      double&                           chiF;
       Fastor::TensorMap< double, 3, 3 > PK2Ref;
       double*                           veDev;
       double*                           veVol;
@@ -555,8 +415,6 @@ namespace Marmot::Materials {
           omega( find( "omega" ) ),
           damageDriver( find( "damageDriver" ) ),
           alphaPBar( find( "alphaPBar" ) ),
-          alphaD( find( "alphaD" ) ),
-          chiF( find( "chiF" ) ),
           PK2Ref( &find( "PK2Ref" ) ),
           veDev( &find( "veDev" ) ),
           veVol( &find( "veVol" ) ){};
@@ -608,42 +466,8 @@ namespace Marmot::Materials {
      * thetaBar = 1 - 6 theta / pi (same endpoints, monotonically related, not equal).
      * No arccos is needed, so it is cheaper and free of branch issues.
      */
-    static double lodeParameter( const Tensor33d& tau )
-    {
-      const double p = ( tau( 0, 0 ) + tau( 1, 1 ) + tau( 2, 2 ) ) / 3.0;
-
-      Tensor33d s( tau );
-      for ( int i = 0; i < 3; i++ )
-        s( i, i ) -= p;
-
-      double J2 = 0.0;
-      for ( int i = 0; i < 3; i++ )
-        for ( int j = 0; j < 3; j++ )
-          J2 += s( i, j ) * s( i, j );
-      J2 *= 0.5;
-
-      if ( J2 < 1e-24 ) {
-        return 0.0;
-      }
-      const double J3 = Fastor::determinant( s );
-
-      return std::min( std::max( 1.5 * std::sqrt( 3.0 ) * J3 / std::pow( J2, 1.5 ), -1.0 ), 1.0 );
-    }
 
     /** Paraboloidal (Melro) failure measure of a stress tensor: phiBar = 1 on the surface. */
-    static double paraboloidalMeasure( const Tensor33d& tau, const double Xt, const double Xc )
-    {
-      const double I1 = tau( 0, 0 ) + tau( 1, 1 ) + tau( 2, 2 );
-      const double p  = I1 / 3.0;
-      double       J2 = 0.0;
-      for ( int i = 0; i < 3; i++ )
-        for ( int j = 0; j < 3; j++ ) {
-          const double s_ij = tau( i, j ) - ( i == j ? p : 0.0 );
-          J2 += s_ij * s_ij;
-        }
-      J2 *= 0.5;
-      return ( 3.0 * J2 + ( Xc - Xt ) * I1 ) / ( Xc * Xt );
-    }
 
     /// Rice-Tracey / Smith exponent in the SWDFM driver. A micromechanical constant, NOT fitted.
     inline const static double swdfmExponent = 1.3;
@@ -670,12 +494,11 @@ namespace Marmot::Materials {
      *
      * Returns { omega, dOmega_dAlphaP_local, dOmega_dAlphaP_nonlocal, D_new, alphaPBar_new }.
      */
-    std::tuple< double, double, double, double, double, double, Tensor33d > computeOmega( const double alphaP_local,
-                                                                                          const double alphaP_nonlocal,
-                                                                                          const Tensor33d& tau_eff,
-                                                                                          const double     D_old,
-                                                                                          const double alphaPBar_old,
-                                                                                          const double chiF_old )
+    std::tuple< double, double, double, double, double > computeOmega( const double     alphaP_local,
+                                                                       const double     alphaP_nonlocal,
+                                                                       const Tensor33d& tau_eff,
+                                                                       const double     D_old,
+                                                                       const double     alphaPBar_old )
     {
       const double alphaP_weighted = alphaP_nonlocal * m + alphaP_local * ( 1 - m );
 
@@ -683,7 +506,7 @@ namespace Marmot::Materials {
       const double dAlphaP_weighted_dAlphaP_nonlocal = m;
 
       if ( alphaP_weighted < 0.0 ) {
-        return { 0.0, 0.0, 0.0, D_old, alphaPBar_old, chiF_old, Tensor33d( 0.0 ) };
+        return { 0.0, 0.0, 0.0, D_old, alphaPBar_old };
       }
 
       const double alphaPBar_new = alphaP_weighted;
@@ -702,46 +525,12 @@ namespace Marmot::Materials {
       //          Two-variable structure after Nguyen, Lani, Pardoen, Morelle & Noels,
       //          Int. J. Solids Struct. 96 (2016), which separates gradual softening from the
       //          final failure stage.
-      double    omega_f     = 0.0;
-      double    dOmega_f    = 0.0;
-      double    D           = D_old;
-      double    chiF_new    = chiF_old;
-      Tensor33d dOmega_dTau = Tensor33d( 0.0 );
+      double omega_f  = 0.0;
+      double dOmega_f = 0.0;
+      double D        = D_old;
 
-      if ( Xt != 0.0 ) {
-        // ---- STRESS-BASED onset (Nguyen / Melro). Running max keeps the driver monotone.
-        const double phiBar = paraboloidalMeasure( tau_eff, Xt, Xc );
-        const bool   active = phiBar >= chiF_old; // the max is being SET this increment
-        chiF_new            = std::max( chiF_old, phiBar );
-
-        if ( chiF_new > 1.0 ) {
-          omega_f = 1.0 - exp( -( chiF_new - 1.0 ) / dF );
-          // omega_f is stress-driven, so it contributes to the tangent through dTau/dF rather
-          // than through dAlphaP. dOmega_f/dAlphaP is therefore genuinely zero here, and the
-          // coupling is carried by dOmega_dTau below.
-          dOmega_f = 0.0;
-
-          if ( active ) {
-            // dPhiBar/dTau = [ 3 dev(tau) + ( Xc - Xt ) I ] / ( Xc Xt ),  since dJ2/dTau = dev
-            const double trTau = tau_eff( 0, 0 ) + tau_eff( 1, 1 ) + tau_eff( 2, 2 );
-            Tensor33d    dev( tau_eff );
-            for ( int i = 0; i < 3; i++ )
-              dev( i, i ) -= trTau / 3.0;
-
-            Tensor33d dPhi_dTau = 3.0 * dev;
-            for ( int i = 0; i < 3; i++ )
-              dPhi_dTau( i, i ) += ( Xc - Xt );
-            dPhi_dTau = dPhi_dTau / ( Xc * Xt );
-
-            // omega = 1 - (1-omega_s)(1-omega_f)  ->  dOmega/dChi = (1-omega_s) dOmega_f/dChi
-            const double dOmega_f_dChi = exp( -( chiF_new - 1.0 ) / dF ) / dF;
-            dOmega_dTau                = ( 1.0 - omega_s ) * dOmega_f_dChi * dPhi_dTau;
-          }
-        }
-      }
-      else if ( cSW != 0.0 ) {
-        const double T    = std::min( std::max( triaxiality( tau_eff ), etaMin ), etaMax );
-        const double zeta = lodeParameter( tau_eff );
+      if ( cSW != 0.0 ) {
+        const double T = std::min( std::max( triaxiality( tau_eff ), etaMin ), etaMax );
 
         // When the driver is already the dilatant plastic volume, the Rice-Tracey factor would
         // DOUBLE-COUNT the pressure sensitivity (exp(1.3T) dAlphaP is itself a void-growth
@@ -753,18 +542,24 @@ namespace Marmot::Materials {
 
         // Rice-Tracey weight with the exponent E(T) * w(kdot) (see the declaration above); the
         // compression term keeps its mirrored form exp(-E)/bSW.
-        const double logG = swdfmLogG( T, kdot );
+        double       kdotDLogGDKdot = 0.0;
+        const double logG           = swdfmLogG( T, kdot, &kdotDLogGDKdot );
 
-        double g = volDriver != 0.0 ? 1.0 : exp( logG ) - exp( -logG ) / bSW;
-        if ( volDriver == 0.0 )
-          g *= exp( kSW * ( std::abs( zeta ) - 1.0 ) );
-        g = std::max( g, 0.0 ); // damage is irreversible under monotonic loading
+        double g = exp( logG ) - exp( -logG ) / bSW;
+        g        = std::max( g, 0.0 ); // damage is irreversible under monotonic loading
 
         D = D_old + cSW * g * dAlphaPBar;
 
         if ( D > 1.0 ) {
-          omega_f  = 1.0 - exp( -( D - 1.0 ) / dF );
-          dOmega_f = exp( -( D - 1.0 ) / dF ) / dF * cSW * g;
+          omega_f = 1.0 - exp( -( D - 1.0 ) / dF );
+          // dD/dAlphaPBar carries BOTH the direct term and the rate sensitivity of g:
+          //   dD/dk = cSW ( g + dk * dg/dkdot / dt ),  dk/(kdot dt) == 1
+          //         = cSW ( g - s logG * lode * ( e^logG + e^-logG / bSW ) )
+          // The kdot cancels exactly, so no extra division and no small-kdot blow-up.
+          double dD_dAlphaPBar = cSW * g;
+          if ( kdotDLogGDKdot != 0.0 )
+            dD_dAlphaPBar += cSW * kdotDLogGDKdot * ( exp( logG ) + exp( -logG ) / bSW );
+          dOmega_f = exp( -( D - 1.0 ) / dF ) / dF * dD_dAlphaPBar;
         }
       }
 
@@ -780,10 +575,10 @@ namespace Marmot::Materials {
       const double dOmega_dAlphaP_nonlocal = dOmega_dAlphaP_weigthed * dAlphaP_weighted_dAlphaP_nonlocal;
 
       if ( omega > omegaMax ) {
-        return { omegaMax, 0.0, 0.0, D, alphaPBar_new, chiF_new, Tensor33d( 0.0 ) };
+        return { omegaMax, 0.0, 0.0, D, alphaPBar_new };
       }
       else {
-        return { omega, dOmega_dAlphaP_local, dOmega_dAlphaP_nonlocal, D, alphaPBar_new, chiF_new, dOmega_dTau };
+        return { omega, dOmega_dAlphaP_local, dOmega_dAlphaP_nonlocal, D, alphaPBar_new };
       }
     }
 
