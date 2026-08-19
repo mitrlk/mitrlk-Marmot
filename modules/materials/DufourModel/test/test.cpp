@@ -362,27 +362,64 @@ std::vector< double > withCubicG( double c2, double c3, double c1 )
   return card;
 }
 
+// ---------------------------------------------------------------------------------------------
+// G-4..G-7: the MONOTONE-BY-CONSTRUCTION exponent and the RATE-DEPENDENT T-sensitivity (S9.10).
+//
+//   g(T, kdot) = exp( E(T) * (kdot/kdot_ref)^(-s) ),   E' = (b0 + b1 T + b2 T^2)^2
+//   ( b0, b1, b2 ) = ( 1.798, -0.702, -3.172 ),  kdot_ref = 20,  s < 0 -> s = n
+//
+// Reference values come from `calibration/refit_rate.py`, so a drift between the Python fit and
+// the C++ the FE actually integrates shows up here and not as a mis-scaled campaign.
+// ---------------------------------------------------------------------------------------------
+std::vector< double > withMonotoneG( double b0, double b1, double b2, double kdotRef, double s )
+{
+  std::vector< double > card = withCubicG( 0.0, 0.0, 0.0 ); // Prony tail + three cleared cubic slots
+  card[20]                   = 2.006;                       // cSW of the same fit
+  card.push_back( b0 );
+  card.push_back( b1 );
+  card.push_back( b2 );
+  card.push_back( kdotRef );
+  card.push_back( s );
+  return card;
+}
+
 // G-1: the calibrated cubic reproduces refit_g.py's g(T) at the tabulated triaxialities, and is
 // monotone increasing over the whole range the ten runs cover.
-void testCubicRiceTraceyWeight()
+void testMonotoneRiceTraceyWeight()
 {
-  const std::vector< double > card = withCubicG( -5.75, 3.50, 3.75 );
+  // The ONLY exponent form, calibrated 20 Aug 2026. b0 = sqrt( 1.3 ) is fixed by Rice-Tracey.
+  const std::vector< double > card = withMonotoneG( 1.1402, -0.4450, 0.9725, 0.0, 0.0 );
   DufourModel                 mat( card.data(), static_cast< int >( card.size() ), elLabel );
 
-  // T = 0.0 / 0.2 / 0.4 / 0.6 / 0.8 / 1.0 / 1.2, values from HANDOFF S8.4
-  const std::array< double, 7 > T   = { 0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2 };
-  const std::array< double, 7 > ref = { 1.00, 1.73, 2.23, 2.55, 3.04, 4.48, 9.66 };
-  for ( size_t i = 0; i < T.size(); i++ )
-    throwExceptionOnFailure( checkIfEqual( std::exp( mat.swdfmLogG( T[i] ) ), ref[i], 5e-3 ),
-                             "DufourModel G-1: g(T) does not match the calibrated cubic at T = " +
-                               std::to_string( T[i] ) + " in " + std::string( __PRETTY_FUNCTION__ ) );
+  // E'( 0 ) must equal the Rice-Tracey slope of the T <= 0 branch, so E is C1 at T = 0.
+  const double h   = 1e-6;
+  const double dEp = ( mat.swdfmLogG( h ) - mat.swdfmLogG( 0.0 ) ) / h;
+  const double dEm = ( mat.swdfmLogG( 0.0 ) - mat.swdfmLogG( -h ) ) / h;
+  throwExceptionOnFailure( checkIfEqual( dEp, dEm, 1e-4 ),
+                           "DufourModel G-1: E is not C1 at T = 0; b0 must be sqrt( 1.3 ) in " +
+                             std::string( __PRETTY_FUNCTION__ ) );
+  throwExceptionOnFailure( checkIfEqual( dEp, 1.3, 1e-4 ),
+                           "DufourModel G-1: E'( 0 ) must be the Rice-Tracey 1.3 in " +
+                             std::string( __PRETTY_FUNCTION__ ) );
+
+  // g( 0 ) = 1 exactly.
+  throwExceptionOnFailure( checkIfEqual( std::exp( mat.swdfmLogG( 0.0 ) ), 1.0, 1e-14 ),
+                           "DufourModel G-1: g( 0 ) must be 1 in " + std::string( __PRETTY_FUNCTION__ ) );
+
+  // The two calibration points. E must reproduce the values the Arcan fit was built on.
+  throwExceptionOnFailure( checkIfEqual( mat.swdfmLogG( 0.816 ), 1.1330, 2e-3 ),
+                           "DufourModel G-1: E( 0.816 ) must be the fitted 45 deg value in " +
+                             std::string( __PRETTY_FUNCTION__ ) );
+  throwExceptionOnFailure( checkIfEqual( mat.swdfmLogG( 1.174 ), 2.1407, 2e-3 ),
+                           "DufourModel G-1: E( 1.174 ) must be the fitted 0 deg value in " +
+                             std::string( __PRETTY_FUNCTION__ ) );
 
   // admissibility: a void-growth weight must not decrease with triaxiality
   double prev = mat.swdfmLogG( 0.0 );
   for ( int k = 1; k <= 1300; k++ ) {
     const double cur = mat.swdfmLogG( 1.3 * k / 1300.0 );
     throwExceptionOnFailure( cur > prev,
-                             "DufourModel G-1: g(T) is not monotone increasing on T = 0..1.3 in " +
+                             "DufourModel G-1: E(T) is not monotone increasing on T = 0..1.3 in " +
                                std::string( __PRETTY_FUNCTION__ ) );
     prev = cur;
   }
@@ -390,14 +427,22 @@ void testCubicRiceTraceyWeight()
 
 // G-2: an absent (or all-zero) shape tail must reproduce the published single-branch exp( 1.3 T )
 // bit for bit, so that every deck without the tail is unaffected by this change.
-void testCubicReducesToSingleBranch()
+void testCardWithoutExponentShapeIsRefused()
 {
-  const std::vector< double > card = withCubicG( 0.0, 0.0, 0.0 );
-  DufourModel                 mat( card.data(), static_cast< int >( card.size() ), elLabel );
-  for ( double T = -0.5; T <= 1.3001; T += 0.1 )
-    throwExceptionOnFailure( checkIfEqual( mat.swdfmLogG( T ), 1.3 * T, 1e-14 ),
-                             "DufourModel G-2: a zero shape tail must reduce to exp( 1.3 T ) in " +
-                               std::string( __PRETTY_FUNCTION__ ) );
+  // With no shape the exponent is identically zero, so g = 1 at every positive triaxiality and
+  // the stress-state dependence is silently absent. Refuse it while the driver is active.
+  std::vector< double > card    = withMonotoneG( 0.0, 0.0, 0.0, 0.0, 0.0 );
+  bool                  refused = false;
+  try {
+    DufourModel mat( card.data(), static_cast< int >( card.size() ), elLabel );
+  }
+  catch ( const std::invalid_argument& ) {
+    refused = true;
+  }
+  throwExceptionOnFailure( refused,
+                           "DufourModel G-2: a card with cSW != 0 and no exponent shape "
+                           "( b0, b1, b2 ) must be refused in " +
+                             std::string( __PRETTY_FUNCTION__ ) );
 }
 
 // G-3: a deck written for the SUPERSEDED two-branch law -- ( swdfmT0, swdfmExp2 ) = ( 0.88, 4.10 )
@@ -418,27 +463,6 @@ void testLegacyTwoBranchCardIsRefused()
   throwExceptionOnFailure( threw,
                            "DufourModel G-3: a legacy two-branch card was accepted instead of refused in " +
                              std::string( __PRETTY_FUNCTION__ ) );
-}
-
-// ---------------------------------------------------------------------------------------------
-// G-4..G-7: the MONOTONE-BY-CONSTRUCTION exponent and the RATE-DEPENDENT T-sensitivity (S9.10).
-//
-//   g(T, kdot) = exp( E(T) * (kdot/kdot_ref)^(-s) ),   E' = (b0 + b1 T + b2 T^2)^2
-//   ( b0, b1, b2 ) = ( 1.798, -0.702, -3.172 ),  kdot_ref = 20,  s < 0 -> s = n
-//
-// Reference values come from `calibration/refit_rate.py`, so a drift between the Python fit and
-// the C++ the FE actually integrates shows up here and not as a mis-scaled campaign.
-// ---------------------------------------------------------------------------------------------
-std::vector< double > withMonotoneG( double b0, double b1, double b2, double kdotRef, double s )
-{
-  std::vector< double > card = withCubicG( 0.0, 0.0, 0.0 ); // Prony tail + three cleared cubic slots
-  card[20]                   = 2.006;                       // cSW of the same fit
-  card.push_back( b0 );
-  card.push_back( b1 );
-  card.push_back( b2 );
-  card.push_back( kdotRef );
-  card.push_back( s );
-  return card;
 }
 
 // G-4: E(T) matches the expanded quintic, and is monotone for ARBITRARY b -- the whole point of
@@ -540,6 +564,11 @@ double damagingTangentError( double sVal, bool rateOn )
   card[20]       = 1.797;               // cSW -- propsBase ships 0.0, i.e. the driver switched OFF
   card[base + 6] = rateOn ? 20.0 : 0.0; // swdfmKdotRef; 0 switches the rate term OFF
   card[base + 7] = rateOn ? sVal : 0.0; // swdfmS
+  // propsVisco carries no swdfmExtra tail, so the exponent shape must be supplied here. Without
+  // it the constructor refuses the card: a shapeless exponent means g = 1 at every T > 0.
+  card[base + 3] = 1.1402;  // swdfmB0 = sqrt( 1.3 ), fixed by Rice-Tracey
+  card[base + 4] = -0.4450; // swdfmB1
+  card[base + 5] = 0.9725;  // swdfmB2
 
   // Drive it hard enough to push the driver past D = 1, in a few committed increments.
   const double          dT = 0.02;
@@ -637,19 +666,10 @@ void testAmbiguousShapeCardsAreRefused()
 // coefficients do. Without it the calibrated split form gives g(-0.29) = 16.6 (ledger 28.6).
 void testCompressionBranchDecays()
 {
-  // the calibrated SPLIT form: tension exp(0.165T +20.228T^2 -41.044T^3 +22.020T^4), cap 1.10
-  std::vector< double > c = withCubicG( 20.228, -41.044, 0.165 ); // (c2, c3, c1)
-  c[20]                   = 1.660;
-  c.push_back( 0.0 );
-  c.push_back( 0.0 );
-  c.push_back( 0.0 );  // b0,b1,b2 off
-  c.push_back( 0.0 );
-  c.push_back( 0.0 );  // kdotRef, s
-  c.push_back( 0.0 );  // dsInf -> 1
-  c.push_back( 0.0 );  // c4 RETIRED -- must be zero; the compression branch is E = 1.3 T
-                       // and does not depend on the tension coefficients anyway
-  c.push_back( 1.10 ); // TCap
-  DufourModel mat( c.data(), static_cast< int >( c.size() ), elLabel );
+  // The T <= 0 branch is E = 1.3 T, independent of the tension shape. Use the calibrated
+  // monotone card.
+  const std::vector< double > c = withMonotoneG( 1.1402, -0.4450, 0.9725, 0.0, 0.0 );
+  DufourModel                 mat( c.data(), static_cast< int >( c.size() ), elLabel );
 
   // compression: strictly below 1 and monotonically falling as T decreases
   double prev = 1.0;
@@ -660,16 +680,21 @@ void testCompressionBranchDecays()
                                " at T = " + std::to_string( T ) + " in " + std::string( __PRETTY_FUNCTION__ ) );
     prev = g;
   }
-  // the value the ledger records as the failure mode this branch prevents
+  // the value the ledger records as the failure mode this branch prevents: an unsplit polynomial
+  // gives g( -0.29 ) = 16.6, i.e. damage 17x faster in compression than in shear
   throwExceptionOnFailure( std::exp( mat.swdfmLogG( -0.29 ) ) < 0.8,
                            "DufourModel G-10: g(-0.29) should be ~0.69, not the 16.6 the unsplit "
                            "polynomial gives, in " +
                              std::string( __PRETTY_FUNCTION__ ) );
-  // continuity at zero, and the tension INVERSION still present
-  throwExceptionOnFailure( checkIfEqual( std::exp( mat.swdfmLogG( 0.0 ) ), 1.0, 1e-12 ),
-                           "DufourModel G-10: g(0) must be exactly 1 in " + std::string( __PRETTY_FUNCTION__ ) );
-  throwExceptionOnFailure( mat.swdfmLogG( 0.584 ) > mat.swdfmLogG( 0.806 ),
-                           "DufourModel G-10: the tension inversion g(0.584) > g(0.806) was lost in " +
+  // continuity at T = 0 from both sides
+  throwExceptionOnFailure( checkIfEqual( std::exp( mat.swdfmLogG( -1e-9 ) ), 1.0, 1e-8 ) &&
+                             checkIfEqual( std::exp( mat.swdfmLogG( 1e-9 ) ), 1.0, 1e-8 ),
+                           "DufourModel G-10: g must be continuous and equal 1 at T = 0 in " +
+                             std::string( __PRETTY_FUNCTION__ ) );
+  // NO tension inversion. The retired cubic ( 20.228, -41.044, 0.165 ) had g( 0.584 ) > g( 0.806 ).
+  // The monotone form cannot, for any b0, b1, b2. That is the reason it replaced the cubic.
+  throwExceptionOnFailure( mat.swdfmLogG( 0.584 ) < mat.swdfmLogG( 0.806 ),
+                           "DufourModel G-10: the monotone form must NOT invert in tension in " +
                              std::string( __PRETTY_FUNCTION__ ) );
 }
 
@@ -698,8 +723,8 @@ int main()
     testViscoelasticReducesToBaseModel,
     testViscoelasticRelaxationLimits,
     testStateVarLayout,
-    testCubicRiceTraceyWeight,
-    testCubicReducesToSingleBranch,
+    testMonotoneRiceTraceyWeight,
+    testCardWithoutExponentShapeIsRefused,
     testLegacyTwoBranchCardIsRefused,
     testMonotoneExponentIsMonotoneForAnyB,
     testRateFactorAndSentinel,

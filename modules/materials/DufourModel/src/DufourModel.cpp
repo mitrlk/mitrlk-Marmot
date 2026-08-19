@@ -105,20 +105,28 @@ namespace Marmot::Materials {
                                        ". See Arcan_test_model/MATERIAL_CARD_LAYOUT.md." );
     }
 
-    // LEGACY-DECK GATE. The two entries after the Prony triplets used to be the two-branch
-    // ( swdfmT0, swdfmExp2 ) pair; they are now ( swdfmC2, swdfmC3 ) of the cubic exponent. A deck
-    // written for the old law carries e.g. ( 0.88, 4.10 ) and NO third entry, which the new law
-    // would read as a perfectly valid but completely different g(T) -- a silent misinterpretation
-    // of exactly the kind that has cost this project results before. Refuse it instead: any deck
-    // that shapes g at all must state the linear coefficient explicitly.
-    if ( ( swdfmC2 != 0.0 || swdfmC3 != 0.0 ) && swdfmC1 == 0.0 )
+    // THE CUBIC EXPONENT IS RETIRED (20 Aug 2026). Its three slots stay in place, because the
+    // card is positional, but they must be zero. A nonzero value there is either a deck written
+    // for the cubic law or a deck written for the even older two-branch ( swdfmT0, swdfmExp2 )
+    // pair. Both would be silently re-read as something else, which is the class of mistake that
+    // has cost this project results before. Refuse them.
+    if ( swdfmC1 != 0.0 || swdfmC2 != 0.0 || swdfmC3 != 0.0 )
       throw std::invalid_argument(
-        "DufourModel: the card shapes the Rice-Tracey weight (entries [28+3 nMaxwell] and "
-        "[29+3 nMaxwell] are nonzero) but gives no linear coefficient at [30+3 nMaxwell]. This is "
-        "the signature of a deck written for the SUPERSEDED two-branch ( swdfmT0, swdfmExp2 ) law, "
-        "which would be silently re-read as the cubic ( swdfmC2, swdfmC3 ). Regenerate the deck "
-        "with the cubic exponent ( c1, c2, c3 ) = ( 3.75, -5.75, 3.50 ), i.e. entries "
-        "( c2, c3, c1 ) = ( -5.75, 3.50, 3.75 ) -- see DufourModel.h and HANDOFF S8.4." );
+        "DufourModel: entries [28..30 + 3 nMaxwell] ( swdfmC2, swdfmC3, swdfmC1 ) are the RETIRED "
+        "cubic exponent and must all be 0. The cubic had three free coefficients against two "
+        "independent constraints, and its slope at T = 0 was 2.9 times the Rice-Tracey slope of "
+        "the T <= 0 branch. Use the monotone exponent at [31..33 + 3 nMaxwell]: "
+        "( b0, b1, b2 ) = ( 1.1402, -0.4450, 0.9725 ), where b0 = sqrt( 1.3 ) is fixed by "
+        "Rice-Tracey and only b1, b2 are fitted. See Arcan_test_model/MATERIAL_CARD_LAYOUT.md." );
+
+    // The exponent shape is now mandatory. Without it E == 0, so g == 1 for every T > 0 and the
+    // triaxiality dependence vanishes silently.
+    if ( cSW != 0.0 && !swdfmShapeGiven() )
+      throw std::invalid_argument(
+        "DufourModel: the SWDFM driver is active ( cSW != 0 ) but the card gives no exponent shape "
+        "at [31..33 + 3 nMaxwell] ( b0, b1, b2 ). Without it g = 1 at every positive triaxiality "
+        "and the stress-state dependence is silently absent. Set "
+        "( b0, b1, b2 ) = ( 1.1402, -0.4450, 0.9725 )." );
 
     // A rate exponent without a reference rate is silently inert -- w would never be applied -- so
     // it is far more likely to be a card written wrong than a deliberate choice.
@@ -127,13 +135,6 @@ namespace Marmot::Materials {
                                    "[35 + 3 nMaxwell] but the reference rate at [34 + 3 nMaxwell] "
                                    "is zero or absent, which switches the rate term OFF. Set the "
                                    "reference rate (calibrated: 20 /s) or clear the exponent." );
-
-    // Both exponent forms at once is ambiguous: swdfmMonotoneForm() silently wins and the cubic
-    // entries are ignored, which reads as a card that does something it does not.
-    if ( swdfmMonotoneForm() && ( swdfmC1 != 0.0 || swdfmC2 != 0.0 || swdfmC3 != 0.0 ) )
-      throw std::invalid_argument( "DufourModel: the card carries BOTH the cubic exponent "
-                                   "( c1, c2, c3 ) and the monotone quintic ( b0, b1, b2 ). They are "
-                                   "alternatives, not a sum -- clear one of the two." );
   }
 
   void DufourModel::computeStress( ConstitutiveResponse< 3 >& response,

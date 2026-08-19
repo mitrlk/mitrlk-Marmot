@@ -82,9 +82,14 @@ namespace Marmot::Materials {
     // CUBIC-EXPONENT Rice-Tracey weight in the SWDFM driver -- OPTIONAL, the three card entries
     // that follow the Prony triplets, i.e. [28 + 3 nMaxwell] .. [30 + 3 nMaxwell]:
     //
-    //   [28 + 3 nMaxwell]  swdfmC2     coefficient of T^2
-    //   [29 + 3 nMaxwell]  swdfmC3     coefficient of T^3
-    //   [30 + 3 nMaxwell]  swdfmC1     coefficient of T   (0 or absent -> swdfmExponent = 1.3)
+    //   [28 + 3 nMaxwell]  swdfmC2     RETIRED 20 Aug 2026. Must be 0.
+    //   [29 + 3 nMaxwell]  swdfmC3     RETIRED 20 Aug 2026. Must be 0.
+    //   [30 + 3 nMaxwell]  swdfmC1     RETIRED 20 Aug 2026. Must be 0.
+    //     The cubic exponent E = c1 T + c2 T^2 + c3 T^3 is gone. It had three free coefficients
+    //     against two independent constraints, and its slope at T = 0 was c1 = 3.75, which is
+    //     2.9 times the Rice-Tracey slope of the T <= 0 branch. That slope jump is not
+    //     defensible. The monotone form at [31..33 + 3 nMaxwell] replaces it and reproduces the
+    //     Arcan set as well or better. The three slots STAY, because the card is positional.
     //
     //   g(T) = exp( c1 T + c2 T^2 + c3 T^3 ) - exp( -( c1 T + c2 T^2 + c3 T^3 ) ) / bSW
     //
@@ -221,7 +226,11 @@ namespace Marmot::Materials {
     }
 
     /// True when the card carries the monotone-by-construction quintic instead of the cubic.
-    bool swdfmMonotoneForm() const { return swdfmB0 != 0.0 || swdfmB1 != 0.0 || swdfmB2 != 0.0; }
+    /** True when the card supplies the exponent shape. b0 = 0 with b1 = b2 = 0 means the card
+     * gives no shape at all, which the constructor refuses. Retained as a validity check only;
+     * it is no longer a choice between two forms, because the cubic form was removed on
+     * 20 Aug 2026. */
+    bool swdfmShapeGiven() const { return swdfmB0 != 0.0 || swdfmB1 != 0.0 || swdfmB2 != 0.0; }
 
     /** Exponent of the Rice-Tracey weight, including the rate factor.
      *
@@ -254,18 +263,19 @@ namespace Marmot::Materials {
       // CAP: above the calibrated range the weight is held at its last evidenced value.
       const double Tc = swdfmTCap > 0.0 ? std::min( T, swdfmTCap ) : T;
 
-      double E;
-      if ( swdfmMonotoneForm() ) {
-        // E(T) = INT_0^T ( b0 + b1 s + b2 s^2 )^2 ds, expanded
-        const double b0 = swdfmB0, b1 = swdfmB1, b2 = swdfmB2;
-        E = ( ( ( ( b2 * b2 / 5.0 ) * Tc + b1 * b2 / 2.0 ) * Tc + ( b1 * b1 + 2.0 * b0 * b2 ) / 3.0 ) * Tc + b0 * b1 ) *
-              Tc * Tc +
-            b0 * b0 * Tc;
-      }
-      else {
-        const double c1 = swdfmC1 != 0.0 ? swdfmC1 : swdfmExponent;
-        E               = ( ( swdfmC3 * Tc + swdfmC2 ) * Tc + c1 ) * Tc;
-      }
+      // THE ONLY EXPONENT FORM.  E(T) = INT_0^T ( b0 + b1 s + b2 s^2 )^2 ds, expanded.
+      // E' = ( b0 + b1 T + b2 T^2 )^2 >= 0 for ANY b0, b1, b2, so E cannot decrease with
+      // triaxiality. b0 is NOT a free parameter: b0 = sqrt( swdfmExponent ) = sqrt( 1.3 ) gives
+      // E'( 0 ) = 1.3, which matches the slope of the T <= 0 Rice-Tracey branch exactly, so E is
+      // C1 continuous at T = 0. Only b1 and b2 are fitted, against the Arcan 0 deg and 45 deg
+      // points -- two numbers against two constraints.
+      // Calibrated 20 Aug 2026: ( b0, b1, b2 ) = ( 1.1402, -0.4450, 0.9725 ). Measured Arcan
+      // failure displacement against experiment: 1.005 / 0.953 / 1.067 at 0 / 45 / 90 deg.
+      const double b0 = swdfmB0, b1 = swdfmB1, b2 = swdfmB2;
+      double       E = ( ( ( ( b2 * b2 / 5.0 ) * Tc + b1 * b2 / 2.0 ) * Tc + ( b1 * b1 + 2.0 * b0 * b2 ) / 3.0 ) * Tc +
+                   b0 * b1 ) *
+                   Tc * Tc +
+                 b0 * b0 * Tc;
 
       if ( swdfmKdotRef > 0.0 ) {
         const double s = swdfmS < 0.0 ? n : swdfmS; // sentinel: tie the rate exponent to n
