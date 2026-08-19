@@ -585,10 +585,11 @@ void testCompressionBranchDecays()
 // branches unconditionally, so that the layout stays static and independent of the card:
 //   base    Fp(9) + alphaP + omega + damageDriver + alphaPBar                          = 13
 //   visco   PK2Ref(9) + veDev(7 x 9) + veVol(7 x 1)                                    = 79
+//   triax   the clamped triaxiality the driver used, per QP, appended LAST               =  1
 void testStateVarLayout()
 {
   DufourModel mat( propsVisco.data(), static_cast< int >( propsVisco.size() ), elLabel );
-  throwExceptionOnFailure( checkIfEqual( static_cast< double >( mat.getNumberOfRequiredStateVars() ), 92.0, 1e-12 ),
+  throwExceptionOnFailure( checkIfEqual( static_cast< double >( mat.getNumberOfRequiredStateVars() ), 93.0, 1e-12 ),
                            "DufourModel V-5: unexpected number of required state vars in " +
                              std::string( __PRETTY_FUNCTION__ ) );
 }

@@ -254,6 +254,10 @@ namespace Marmot::Materials {
                 driver,
                 alphaPBar ) = computeOmega( alphaP, alphaP_nonlocal, tau_eff, driverOld, alphaPBarOld );
 
+      // Record the triaxiality the driver actually saw, at THIS quadrature point, clamped
+      // exactly as computeOmega clamps it. Exported as result=triax for g(T) calibration.
+      stateVars->triax = std::min( std::max( triaxiality( tau_eff ), etaMin ), etaMax );
+
       response.tau                  = tau_eff * ( 1.0 - omega );
       response.rho                  = density;
       response.elasticEnergyDensity = psi_;
@@ -330,6 +334,8 @@ namespace Marmot::Materials {
                 driver,
                 alphaPBar ) = computeOmega( alphaPOld, alphaP_nonlocal, tau_eff, driverOld, alphaPBarOld );
 
+      stateVars->triax = std::min( std::max( triaxiality( tau_eff ), etaMin ), etaMax );
+
       response.tau                  = tau_eff * ( 1.0 - omega );
       response.rho                  = density;
       response.elasticEnergyDensity = psi_;
@@ -392,6 +398,7 @@ namespace Marmot::Materials {
     // explicit: the accumulated driver and the previous weighted alphaP must start at zero
     stateVars->damageDriver = 0.0;
     stateVars->alphaPBar    = 0.0;
+    stateVars->triax        = 0.0;
     // viscoelasticity: unstressed reference and quiescent Maxwell branches
     stateVars->PK2Ref.zeros();
     for ( int i = 0; i < nMaxwellMax * 9; i++ )

@@ -397,6 +397,15 @@ namespace Marmot::Materials {
         { .name = "PK2Ref", .length = 9 },
         { .name = "veDev", .length = nMaxwellMax * 9 },
         { .name = "veVol", .length = nMaxwellMax },
+        // triax : the CLAMPED stress triaxiality actually used by the SWDFM driver this
+        //         increment, i.e. min(max(triaxiality(tau_eff), etaMin), etaMax). Stored
+        //         per QUADRATURE POINT so a g(T) calibration can read T at the same point
+        //         where the damage is accumulating. Recovering it from the element-averaged
+        //         exported stress is WRONG (that mean is taken over all 8 QPs while the
+        //         damage output is a max), and recovering it by inverting the driver is
+        //         unreliable: it returned T > etaMax, which the clamp makes impossible.
+        //         APPENDED LAST so that no pre-existing state var index shifts.
+        { .name = "triax", .length = 1 },
       } );
 
       Fastor::TensorMap< double, 3, 3 > Fp;
@@ -407,6 +416,7 @@ namespace Marmot::Materials {
       Fastor::TensorMap< double, 3, 3 > PK2Ref;
       double*                           veDev;
       double*                           veVol;
+      double&                           triax;
 
       DufourModelStateVarManager( double* theStateVarVector )
         : MarmotStateVarVectorManager( theStateVarVector, layout ),
@@ -417,7 +427,8 @@ namespace Marmot::Materials {
           alphaPBar( find( "alphaPBar" ) ),
           PK2Ref( &find( "PK2Ref" ) ),
           veDev( &find( "veDev" ) ),
-          veVol( &find( "veVol" ) ){};
+          veVol( &find( "veVol" ) ),
+          triax( find( "triax" ) ){};
     };
     std::unique_ptr< DufourModelStateVarManager > stateVars;
 
