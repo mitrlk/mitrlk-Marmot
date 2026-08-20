@@ -151,7 +151,22 @@ namespace Marmot::Materials {
 
     /** omega_f from the driver. ONE definition, used both by computeOmega and by the lagged
      *  interaction gate, so the two cannot drift apart. */
+    /** The failure variable as a function of the driver.
+     *
+     * omega_f = 1 - exp( -(D-1)/dF ).  ONE definition, used by the driver and by the lagged path.
+     *
+     * A squared argument was tried on 20 Aug 2026 to remove the slope jump at D = 1, on the
+     * reasoning that a point begins to lose stiffness at full rate 1/dF the instant it crosses the
+     * threshold. It did let the coarse SLJ pass D = 1 and keep converging, where the linear form
+     * died at step 17. But it overshot badly: the SLJ peak went to 9836 N against the measured
+     * 8566, a ratio of 1.148, where the linear form gave 1.035. REVERTED. The Arcans were nearly
+     * unaffected either way: D = 1 landed at the same displacement to the micron and the peak
+     * force changed by 0.01 %, because omega_f is zero before initiation in both forms.
+     */
     double omegaFOfDriver( const double D ) const { return D > 1.0 ? 1.0 - std::exp( -( D - 1.0 ) / dF ) : 0.0; }
+
+    /// d omega_f / dD. Equal to 1/dF at D = 1, i.e. the stiffness starts to fall at full rate.
+    double dOmegaFOfDriver( const double D ) const { return D > 1.0 ? std::exp( -( D - 1.0 ) / dF ) / dF : 0.0; }
 
     /** Softening variable and its derivative w.r.t. the (weighted) driving strain.
      *
@@ -530,7 +545,7 @@ namespace Marmot::Materials {
         D = D_old + cSW * g * dAlphaPBar;
 
         if ( D > 1.0 ) {
-          omega_f = 1.0 - exp( -( D - 1.0 ) / dF );
+          omega_f = omegaFOfDriver( D );
           // dD/dAlphaPBar carries BOTH the direct term and the rate sensitivity of g:
           //   dD/dk = cSW ( g + dk * dg/dkdot / dt ),  dk/(kdot dt) == 1
           //         = cSW ( g - s logG * lode * ( e^logG + e^-logG / bSW ) )
@@ -538,7 +553,7 @@ namespace Marmot::Materials {
           double dD_dAlphaPBar = cSW * g;
           if ( kdotDLogGDKdot != 0.0 )
             dD_dAlphaPBar += cSW * kdotDLogGDKdot * ( exp( logG ) + exp( -logG ) / bSW );
-          dOmega_f = exp( -( D - 1.0 ) / dF ) / dF * dD_dAlphaPBar;
+          dOmega_f = dOmegaFOfDriver( D ) * dD_dAlphaPBar;
         }
       }
 
