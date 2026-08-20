@@ -379,6 +379,10 @@ namespace Marmot::Materials {
     stateVars->damageDriver = 0.0;
     stateVars->alphaPBar    = 0.0;
     stateVars->triax        = 0.0;
+    // postprocessing outputs. Written by computeOmega; zeroed here so an unloaded point reads 0.
+    stateVars->omegaS = 0.0;
+    stateVars->omegaF = 0.0;
+    stateVars->lode   = 0.0;
     // viscoelasticity: unstressed reference and quiescent Maxwell branches
     stateVars->PK2Ref.zeros();
     for ( int i = 0; i < nMaxwellMax * 9; i++ )

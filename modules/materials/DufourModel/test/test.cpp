@@ -523,20 +523,46 @@ void testMonotoneExponentIsMonotoneForAnyB()
   }
 }
 
-// G-5: the rate factor. w = (kdot/20)^(-n) with the sentinel s < 0 tying s to the card's n, and the
-// measured span 1.535 / 1.105 / 1.000 / 0.905 at the SLJ / 1 / 10 / 100 mm/s.
+// G-5: the rate factor is MULTIPLICATIVE ON g, therefore ADDITIVE on the exponent:
+//
+//     swdfmLogG( T, kdot ) - swdfmLogG( T, kdotRef ) = -s ln( kdot / kdotRef ) = ln w
+//
+// so the offset is the SAME at every triaxiality, including on the T <= 0 branch. It was
+// multiplicative on E until 20 Aug 2026, i.e. g = exp( E w ); at the joint's measured rate ratio
+// of 22000 that gave g = 611900 at s = 0.30 and the run could not start. See the rate block in
+// DufourModel.h. This test pins the placement, not just the magnitude.
 void testRateFactorAndSentinel()
 {
   const std::vector< double > card = withMonotoneG( 1.798, -0.702, -3.172, 20.0, -1.0 );
   DufourModel                 mat( card.data(), static_cast< int >( card.size() ), elLabel );
-  const double                E1 = mat.swdfmLogG( 0.6, 20.0 ); // at the reference rate, w = 1
+  const double                s = props[12]; // the s < 0 sentinel ties the exponent to the card's n
 
   const std::array< double, 4 > kdot = { 1.051e-3, 2.0, 20.0, 200.0 };
-  const std::array< double, 4 > w    = { 1.535, 1.105, 1.000, 0.905 };
-  for ( size_t i = 0; i < kdot.size(); i++ )
-    throwExceptionOnFailure( checkIfEqual( mat.swdfmLogG( 0.6, kdot[i] ) / E1, w[i], 3e-3 ),
-                             "DufourModel G-5: rate factor wrong at kdot = " + std::to_string( kdot[i] ) + " in " +
-                               std::string( __PRETTY_FUNCTION__ ) );
+  for ( double T : { -0.30, 0.0, 0.6, 1.10 } ) {
+    const double E1 = mat.swdfmLogG( T, 20.0 ); // at the reference rate ln w = 0 exactly
+    for ( size_t i = 0; i < kdot.size(); i++ ) {
+      const double lnw = -s * std::log( kdot[i] / 20.0 );
+      throwExceptionOnFailure( checkIfEqual( mat.swdfmLogG( T, kdot[i] ) - E1, lnw, 1e-12 ),
+                               "DufourModel G-5: the rate offset is not additive on the exponent at T = " +
+                                 std::to_string( T ) + ", kdot = " + std::to_string( kdot[i] ) + " in " +
+                                 std::string( __PRETTY_FUNCTION__ ) );
+    }
+  }
+
+  // and the offset must be INDEPENDENT of T: that is what "multiplicative on g" means.
+  const double off0 = mat.swdfmLogG( -0.30, 1.051e-3 ) - mat.swdfmLogG( -0.30, 20.0 );
+  const double off1 = mat.swdfmLogG( 1.10, 1.051e-3 ) - mat.swdfmLogG( 1.10, 20.0 );
+  throwExceptionOnFailure( checkIfEqual( off0, off1, 1e-12 ),
+                           "DufourModel G-5: the rate offset depends on T, so the factor is still "
+                           "inside the exponential, in " +
+                             std::string( __PRETTY_FUNCTION__ ) );
+
+  // the reported rate sensitivity must be the CONSTANT -s, not -s E as the old form gave
+  double dLogG = 0.0;
+  mat.swdfmLogG( 0.6, 2.0, &dLogG );
+  throwExceptionOnFailure( checkIfEqual( dLogG, -s, 1e-12 ),
+                           "DufourModel G-5: kdot dLogG/dkdot must be the constant -s in " +
+                             std::string( __PRETTY_FUNCTION__ ) );
 
   // the sentinel must reproduce s given EXPLICITLY as n
   const std::vector< double > cardExplicit = withMonotoneG( 1.798, -0.702, -3.172, 20.0, props[12] );
@@ -662,6 +688,83 @@ void testDamagingRateTangent()
   }
 }
 
+// G-12: the POSTPROCESSING state variables. omegaS, omegaF and lode were added so that a finished
+// run never has to be repeated because a field was missing. They must be exposed by name, the
+// split must reconstruct omega exactly, and the Lode parameter must hit its three known values.
+void testPostprocessingStateVars()
+{
+  std::vector< double > card = withMonotoneG( 1.1402, -0.4450, 0.9725, 20.0, -1.0 );
+  card[18]                   = 0.0;   // m = 0, so the LOCAL alphaP drives the driver at a material point
+  card[20]                   = 1.797; // cSW as calibrated, so the drive below actually passes D = 1
+  DufourModel mat( card.data(), static_cast< int >( card.size() ), elLabel );
+
+  // (a) the three known Lode states. zeta = +1 axisymmetric tension, 0 pure shear,
+  //     -1 axisymmetric compression. Superposed pressure must not change any of them.
+  auto zetaOf = []( double a, double b, double c, double p ) {
+    Tensor33d t;
+    t.zeros();
+    t( 0, 0 ) = a + p;
+    t( 1, 1 ) = b + p;
+    t( 2, 2 ) = c + p;
+    return DufourModel::lodeParameter( t );
+  };
+  for ( double p : { 0.0, 37.0, -37.0 } ) {
+    throwExceptionOnFailure( checkIfEqual( zetaOf( 2.0, -1.0, -1.0, p ), 1.0, 1e-12 ),
+                             "DufourModel G-12: axisymmetric tension must give the Lode parameter +1 in " +
+                               std::string( __PRETTY_FUNCTION__ ) );
+    throwExceptionOnFailure( checkIfEqual( zetaOf( 1.0, -2.0, 1.0, p ), -1.0, 1e-12 ),
+                             "DufourModel G-12: axisymmetric compression must give the Lode parameter -1 in " +
+                               std::string( __PRETTY_FUNCTION__ ) );
+    throwExceptionOnFailure( checkIfEqual( zetaOf( 1.0, 0.0, -1.0, p ), 0.0, 1e-12 ),
+                             "DufourModel G-12: pure shear must give the Lode parameter 0 in " +
+                               std::string( __PRETTY_FUNCTION__ ) );
+  }
+  // an unstressed point must not produce a NaN
+  Tensor33d zero;
+  zero.zeros();
+  throwExceptionOnFailure( std::isfinite( DufourModel::lodeParameter( zero ) ),
+                           "DufourModel G-12: an unstressed point gave a non-finite Lode parameter in " +
+                             std::string( __PRETTY_FUNCTION__ ) );
+
+  // (b) the names must be reachable, and omegaS / omegaF must rebuild omega exactly.
+  std::vector< double > sv( mat.getNumberOfRequiredStateVars(), 0.0 );
+  mat.assignStateVars( sv.data(), static_cast< int >( sv.size() ) );
+  mat.initializeYourself();
+  for ( const auto& nm : { "omegaS", "omegaF", "lode", "triax", "omega" } ) {
+    bool ok = true;
+    try {
+      ok = mat.getStateView( nm ).stateLocation != nullptr;
+    }
+    catch ( const std::exception& ) {
+      ok = false;
+    }
+    throwExceptionOnFailure( ok,
+                             "DufourModel G-12: state variable '" + std::string( nm ) +
+                               "' is not exposed by getStateView in " + std::string( __PRETTY_FUNCTION__ ) );
+  }
+
+  Tensor33d F  = Spatial3D::I;
+  double    dT = 1.0;
+  for ( int k = 0; k < 400; k++ ) {
+    F( 0, 0 ) += 0.004;
+    F( 1, 1 ) -= 0.0012;
+    F( 2, 2 ) -= 0.0012;
+    step( sv, F, 0.0, dT, card );
+    const double om  = *mat.getStateView( "omega" ).stateLocation;
+    const double oms = *mat.getStateView( "omegaS" ).stateLocation;
+    const double omf = *mat.getStateView( "omegaF" ).stateLocation;
+    // omega is CAPPED at omegaMax, so compare the split only below the cap
+    if ( om < 0.98 )
+      throwExceptionOnFailure( checkIfEqual( om, 1.0 - ( 1.0 - oms ) * ( 1.0 - omf ), 1e-12 ),
+                               "DufourModel G-12: omegaS and omegaF do not rebuild omega in " +
+                                 std::string( __PRETTY_FUNCTION__ ) );
+  }
+  // the drive above must actually have engaged the failure variable, else the check is vacuous
+  throwExceptionOnFailure( *mat.getStateView( "omegaF" ).stateLocation > 0.0,
+                           "DufourModel G-12: omegaF never left zero, so the split check was vacuous in " +
+                             std::string( __PRETTY_FUNCTION__ ) );
+}
+
 void testRateExponentWithoutReferenceRateIsRefused()
 {
   auto refuses = []( const std::vector< double >& c ) {
@@ -767,11 +870,20 @@ void testCompressionBranchDecays()
 //   base    Fp(9) + alphaP + omega + damageDriver + alphaPBar                          = 13
 //   visco   PK2Ref(9) + veDev(7 x 9) + veVol(7 x 1)                                    = 79
 //   triax   the clamped triaxiality the driver used, per QP, appended LAST               =  1
+//   post    omegaS + omegaF + lode, pure postprocessing outputs, appended 20 Aug 2026     =  3
 void testStateVarLayout()
 {
   DufourModel mat( propsVisco.data(), static_cast< int >( propsVisco.size() ), elLabel );
-  throwExceptionOnFailure( checkIfEqual( static_cast< double >( mat.getNumberOfRequiredStateVars() ), 93.0, 1e-12 ),
-                           "DufourModel V-5: unexpected number of required state vars in " +
+  if ( mat.getNumberOfRequiredStateVars() != 96 ) {
+    // print the layout the RUNTIME actually holds, so a stale build cannot be mistaken for a
+    // layout bug. This is how the 93-vs-96 confusion of 20 Aug 2026 was resolved.
+    std::cout << "  layout in use, " << mat.getNumberOfRequiredStateVars() << " doubles:\n";
+    for ( const auto& e : DufourModel::DufourModelStateVarManager::layout.entries )
+      std::cout << "    " << e.first << "  index " << e.second.index << "  len " << e.second.length << "\n";
+  }
+  throwExceptionOnFailure( checkIfEqual( static_cast< double >( mat.getNumberOfRequiredStateVars() ), 96.0, 1e-12 ),
+                           "DufourModel V-5: unexpected number of required state vars, got " +
+                             std::to_string( mat.getNumberOfRequiredStateVars() ) + " in " +
                              std::string( __PRETTY_FUNCTION__ ) );
 }
 
@@ -797,6 +909,7 @@ int main()
     testCompressionBranchDecays,
     testLargeDamageIncrementRequestsCutback,
     testDamagingRateTangent,
+    testPostprocessingStateVars,
   };
 
   executeTestsAndCollectExceptions( tests );

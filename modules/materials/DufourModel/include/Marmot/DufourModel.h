@@ -101,8 +101,12 @@ namespace Marmot::Materials {
     //                        Calibrated: ( 1.1402, -0.4450, 0.9725 ). MANDATORY when cSW != 0.
     //   [E+3]     swdfmKdotRef  reference rate [1/s], calibrated 20. 0 switches the rate term off.
     //   [E+4]     swdfmS        rate exponent. NEGATIVE is a sentinel meaning "use n".
-    //                           w = ( kdot / kdotRef )^( -s ). The ONLY parameter that separates
-    //                           the SLJ from the Arcans, because the SLJ is ~2000x slower.
+    //                           w = ( kdot / kdotRef )^( -s ), and g = exp( E ) * w, i.e. the
+    //                           weight MULTIPLIES g and is not applied to its exponent.
+    //                           The ONLY parameter that separates the SLJ from the Arcans.
+    //                           MEASURED 20 Aug 2026: the SLJ accumulates kappa_bar at 0.0016 /s
+    //                           and the Arcans at 19.6 .. 36 /s, so the ratio is 22000, not the
+    //                           ~2000 stated here before.
     //   [E+5]     swdfmTCap     cap on T before evaluating E. 0 = no cap.
     //
     // NOTHING ELSE. Twelve parameters were deleted on 20 Aug 2026 rather than left as inert
@@ -110,9 +114,11 @@ namespace Marmot::Materials {
     // swdfmLocR, swdfmLocEta. The constructor refuses a card that still carries them, because the
     // old 60-entry layout put dF at [23], which is now nMaxwell, and would read as zero branches.
     //
-    // T <= 0 uses E = swdfmExponent * T = 1.3 T with NO rate factor. A single polynomial cannot
-    // behave on both sides of T = 0: the even powers stay positive while the odd ones flip, so the
-    // tension coefficients would give damage FASTER in compression than in shear.
+    // T <= 0 uses E = swdfmExponent * T = 1.3 T. A single polynomial cannot behave on both sides
+    // of T = 0: the even powers stay positive while the odd ones flip, so the tension coefficients
+    // would give damage FASTER in compression than in shear. The RATE factor is applied to this
+    // branch as well, since rate sensitivity is not a triaxiality effect. It was not, before
+    // 20 Aug 2026, and about 90 % of the SLJ bondline sits at T ~ 0.
     // ------------------------------------------------------------------------------------------
     const double swdfmB0, swdfmB1, swdfmB2, swdfmKdotRef, swdfmS;
 
@@ -250,37 +256,60 @@ namespace Marmot::Materials {
       // specimen sitting at T ~ 0, with its driver uniform to max/median = 1.0 -- set the drive scale.
       // Applies to BOTH exponent forms; a purely monotone card is unaffected because its own value at
       // T < 0 is already below 1.
-      if ( T <= 0.0 )
-        return swdfmExponent * T;
+      double E;
+      if ( T <= 0.0 ) {
+        E = swdfmExponent * T;
+      }
+      else {
+        // CAP: above the calibrated range the weight is held at its last evidenced value.
+        const double Tc = swdfmTCap > 0.0 ? std::min( T, swdfmTCap ) : T;
 
-      // CAP: above the calibrated range the weight is held at its last evidenced value.
-      const double Tc = swdfmTCap > 0.0 ? std::min( T, swdfmTCap ) : T;
+        // THE ONLY EXPONENT FORM.  E(T) = INT_0^T ( b0 + b1 s + b2 s^2 )^2 ds, expanded.
+        // E' = ( b0 + b1 T + b2 T^2 )^2 >= 0 for ANY b0, b1, b2, so E cannot decrease with
+        // triaxiality. b0 is NOT a free parameter: b0 = sqrt( swdfmExponent ) = sqrt( 1.3 ) gives
+        // E'( 0 ) = 1.3, which matches the slope of the T <= 0 Rice-Tracey branch exactly, so E is
+        // C1 continuous at T = 0. Only b1 and b2 are fitted, against the Arcan 0 deg and 45 deg
+        // points -- two numbers against two constraints.
+        // Calibrated 20 Aug 2026: ( b0, b1, b2 ) = ( 1.1402, -0.4450, 0.9725 ). Measured Arcan
+        // failure displacement against experiment: 1.005 / 0.953 / 1.067 at 0 / 45 / 90 deg.
+        const double b0 = swdfmB0, b1 = swdfmB1, b2 = swdfmB2;
+        E = ( ( ( ( b2 * b2 / 5.0 ) * Tc + b1 * b2 / 2.0 ) * Tc + ( b1 * b1 + 2.0 * b0 * b2 ) / 3.0 ) * Tc + b0 * b1 ) *
+              Tc * Tc +
+            b0 * b0 * Tc;
+      }
 
-      // THE ONLY EXPONENT FORM.  E(T) = INT_0^T ( b0 + b1 s + b2 s^2 )^2 ds, expanded.
-      // E' = ( b0 + b1 T + b2 T^2 )^2 >= 0 for ANY b0, b1, b2, so E cannot decrease with
-      // triaxiality. b0 is NOT a free parameter: b0 = sqrt( swdfmExponent ) = sqrt( 1.3 ) gives
-      // E'( 0 ) = 1.3, which matches the slope of the T <= 0 Rice-Tracey branch exactly, so E is
-      // C1 continuous at T = 0. Only b1 and b2 are fitted, against the Arcan 0 deg and 45 deg
-      // points -- two numbers against two constraints.
-      // Calibrated 20 Aug 2026: ( b0, b1, b2 ) = ( 1.1402, -0.4450, 0.9725 ). Measured Arcan
-      // failure displacement against experiment: 1.005 / 0.953 / 1.067 at 0 / 45 / 90 deg.
-      const double b0 = swdfmB0, b1 = swdfmB1, b2 = swdfmB2;
-      double       E = ( ( ( ( b2 * b2 / 5.0 ) * Tc + b1 * b2 / 2.0 ) * Tc + ( b1 * b1 + 2.0 * b0 * b2 ) / 3.0 ) * Tc +
-                   b0 * b1 ) *
-                   Tc * Tc +
-                 b0 * b0 * Tc;
-
+      // ------------------------------------------------------------------------------------
+      // RATE FACTOR.  MULTIPLICATIVE ON g, therefore ADDITIVE on the exponent:
+      //
+      //     g = exp( E(T) ) * w( kdot ),      w = ( kdot / kdotRef )^( -s )
+      //
+      // It was MULTIPLICATIVE ON E until 20 Aug 2026, i.e. g = exp( E * w ). That is why s was
+      // unusable. Measured on this card: the SLJ runs at kappa_bar rate 0.0016 /s and the Arcans
+      // at 19.6 .. 36 /s, a factor 22000, so -ln( kdot/kdotRef ) = 9.46 for the joint. With the
+      // weight inside the exponential that gave g = 9.9 / 25.1 / 611900 at s = 0.114 / 0.150 /
+      // 0.300, and the s = 0.300 run died at U = 0.043 mm before any plasticity. Outside the
+      // exponential the same three values are 6.4 / 9.0 / 37.3, and the Arcans -- which sit AT
+      // the reference rate -- move by 10 % across that whole range.
+      //
+      // The form follows Johnson & Cook (1985), where the triaxiality exponential and the rate
+      // term are separate multiplicative brackets of the failure strain:
+      //     eps_f = [ d1 + d2 exp( d3 T ) ] [ 1 + d4 ln( edot* ) ] [ 1 + d5 Th* ]
+      // g plays the role of 1/eps_f here, so the rate bracket multiplies the exponential and
+      // never scales its exponent.
+      //
+      // APPLIED ON BOTH BRANCHES. Rate sensitivity is not a triaxiality effect, so the T <= 0
+      // branch gets it too. This matters for the joint: about 90 % of its bondline sits at
+      // T ~ 0, and under the old code that region had NO rate factor at all.
+      // ------------------------------------------------------------------------------------
       if ( swdfmKdotRef > 0.0 ) {
         const double s = swdfmS < 0.0 ? n : swdfmS; // sentinel: tie the rate exponent to n
-        E *= std::pow( std::max( kdot, swdfmKdotMin ) / swdfmKdotRef, -s );
-        // w = (kdot/kdotRef)^(-s)  =>  kdot dE/dkdot = -s E exactly. Reported so that the
-        // tangent can carry the rate sensitivity instead of omitting it: at the calibrated
-        // s = n = 0.0435 the omission was mild (w spans 1.7x over four decades) but at
-        // s >= 0.15 it makes the return map diverge (SLJ kC2s150 died at step 12).
-        // Above the floor the derivative of max(kdot, kdotMin) is 1; below it kdot is
-        // clamped, the increment is elastic and contributes nothing, so 0 is correct.
+        E += -s * std::log( std::max( kdot, swdfmKdotMin ) / swdfmKdotRef );
+        // log w = -s ln( kdot / kdotRef )  =>  kdot dE/dkdot = -s exactly, a CONSTANT. The old
+        // multiplicative form gave -s E, which grew with the exponent and made the return map
+        // diverge at s >= 0.15. Above the floor the derivative of max( kdot, kdotMin ) is 1;
+        // below it kdot is clamped, the increment is elastic and contributes nothing, so 0.
         if ( kdotDLogGDKdot && kdot > swdfmKdotMin )
-          *kdotDLogGDKdot = -s * E;
+          *kdotDLogGDKdot = -s;
       }
       return E;
     }
@@ -414,6 +443,19 @@ namespace Marmot::Materials {
         //         unreliable: it returned T > etaMax, which the clamp makes impossible.
         //         APPENDED LAST so that no pre-existing state var index shifts.
         { .name = "triax", .length = 1 },
+        // ---- POSTPROCESSING OUTPUTS, appended 20 Aug 2026 ---------------------------------
+        // Every quantity a figure might need, so that a finished run never has to be repeated
+        // because a field was not exported. All are pure outputs: nothing reads them back.
+        // omegaS : the softening variable alone,  1 - exp( -kappa_bar / epsF )
+        // omegaF : the failure variable alone,    1 - exp( -( D - 1 ) / dF ), zero below D = 1
+        //          omega = 1 - ( 1 - omegaS )( 1 - omegaF ) is already exported as "omega".
+        // lode   : the Lode angle PARAMETER of the effective stress,
+        //          zeta = cos( 3 theta ) = 3 sqrt(3) J3 / ( 2 J2^(3/2) ), in [-1, 1].
+        //          +1 axisymmetric tension, 0 pure shear, -1 axisymmetric compression.
+        //          Together with triax it fixes the deviatoric state completely.
+        { .name = "omegaS", .length = 1 },
+        { .name = "omegaF", .length = 1 },
+        { .name = "lode", .length = 1 },
       } );
 
       Fastor::TensorMap< double, 3, 3 > Fp;
@@ -425,6 +467,9 @@ namespace Marmot::Materials {
       double*                           veDev;
       double*                           veVol;
       double&                           triax;
+      double&                           omegaS;
+      double&                           omegaF;
+      double&                           lode;
 
       DufourModelStateVarManager( double* theStateVarVector )
         : MarmotStateVarVectorManager( theStateVarVector, layout ),
@@ -436,7 +481,10 @@ namespace Marmot::Materials {
           PK2Ref( &find( "PK2Ref" ) ),
           veDev( &find( "veDev" ) ),
           veVol( &find( "veVol" ) ),
-          triax( find( "triax" ) ){};
+          triax( find( "triax" ) ),
+          omegaS( find( "omegaS" ) ),
+          omegaF( find( "omegaF" ) ),
+          lode( find( "lode" ) ){};
     };
     std::unique_ptr< DufourModelStateVarManager > stateVars;
 
@@ -484,9 +532,38 @@ namespace Marmot::Materials {
      * normalisation used in CMAME 400 (2022) 115467 eq. (64); note it differs from
      * thetaBar = 1 - 6 theta / pi (same endpoints, monotonically related, not equal).
      * No arccos is needed, so it is cheaper and free of branch issues.
+     *
+     * Like eta it is a RATIO of invariants (J3 / J2^(3/2) is homogeneous of degree zero), so the
+     * Kirchhoff, Cauchy and effective stress all give the same value. Exported as result=lode so
+     * that triax and lode together fix the stress state of every quadrature point.
      */
+    static double lodeParameter( const Tensor33d& tau )
+    {
+      const double p = ( tau( 0, 0 ) + tau( 1, 1 ) + tau( 2, 2 ) ) / 3.0;
 
-    /** Paraboloidal (Melro) failure measure of a stress tensor: phiBar = 1 on the surface. */
+      double s[3][3];
+      for ( int i = 0; i < 3; i++ )
+        for ( int j = 0; j < 3; j++ )
+          s[i][j] = tau( i, j ) - ( i == j ? p : 0.0 );
+
+      double J2 = 0.0;
+      for ( int i = 0; i < 3; i++ )
+        for ( int j = 0; j < 3; j++ )
+          J2 += s[i][j] * s[i][j];
+      J2 *= 0.5;
+
+      const double J3 = s[0][0] * ( s[1][1] * s[2][2] - s[1][2] * s[2][1] ) -
+                        s[0][1] * ( s[1][0] * s[2][2] - s[1][2] * s[2][0] ) +
+                        s[0][2] * ( s[1][0] * s[2][1] - s[1][1] * s[2][0] );
+
+      // near-hydrostatic or unstressed: the deviatoric state is undefined, report shear-like 0
+      const double den = std::pow( std::max( J2, 0.0 ), 1.5 );
+      if ( den < 1e-24 * std::max( 1.0, std::abs( p ) * std::abs( p ) * std::abs( p ) ) ) {
+        return 0.0;
+      }
+      // clamped because round-off can push |zeta| a few ULP past 1 in near-axisymmetric states
+      return std::min( std::max( 1.5 * std::sqrt( 3.0 ) * J3 / den, -1.0 ), 1.0 );
+    }
 
     /// Rice-Tracey / Smith exponent in the SWDFM driver. A micromechanical constant, NOT fitted.
     inline const static double swdfmExponent = 1.3;
@@ -593,6 +670,12 @@ namespace Marmot::Materials {
 
       const double omega                   = 1.0 - ( 1.0 - omega_s ) * ( 1.0 - omega_f );
       const double dOmega_dAlphaP_weigthed = ( 1.0 - omega_f ) * dOmega_s + ( 1.0 - omega_s ) * dOmega_f;
+
+      // POSTPROCESSING OUTPUTS. Written HERE, from the very values that formed omega, so the
+      // split can never disagree with the omega the stress update actually used. Pure outputs.
+      stateVars->omegaS = omega_s;
+      stateVars->omegaF = omega_f;
+      stateVars->lode   = lodeParameter( tau_eff );
 
       // T, zeta AND the rate factor w are held fixed in the tangent (the dOmega/dT * dT/dTau and
       // dOmega/dw * dw/dAlphaPBar contributions are deliberately omitted), so the structure of the
