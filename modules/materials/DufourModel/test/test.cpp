@@ -682,6 +682,52 @@ void testRateExponentWithoutReferenceRateIsRefused()
 
 // G-10: the COMPRESSION BRANCH. g must be < 1 and FALLING for T < 0, whatever the tension
 // coefficients do. Without it the calibrated split form gives g(-0.29) = 16.6 (ledger 28.6).
+// G-11: the material must ASK for a smaller step instead of letting D leap past the threshold.
+// Measured 20 Aug 2026: every run that survived kept max dD below 0.092, every run that died
+// exceeded 0.117. The limit sits in that gap at 0.10. The element catches any std::runtime_error
+// from the material, sets pNewdT = 0.25 and returns, and EdelweissFE turns that into a
+// CutbackRequest, so the throw is the only piece that was missing.
+void testLargeDamageIncrementRequestsCutback()
+{
+  std::vector< double > card = withMonotoneG( 1.1402, -0.4450, 0.9725, 20.0, -1.0 );
+  card[18]                   = 0.0;   // m = 0, so the LOCAL alphaP drives the driver at a material point
+  card[20]                   = 200.0; // cSW absurdly large, so one increment must overshoot the limit
+
+  // A single large increment from rest. dD = cSW g dAlphaPBar must exceed 0.10 and throw.
+  Tensor33d F = Spatial3D::I;
+  F( 0, 0 ) += 0.05;
+  F( 1, 1 ) -= 0.015;
+  F( 2, 2 ) -= 0.015;
+
+  bool threw = false;
+  try {
+    std::vector< double > sv;
+    step( sv, F, 0.0, 0.02, card );
+  }
+  catch ( const std::runtime_error& ) {
+    threw = true;
+  }
+  throwExceptionOnFailure( threw,
+                           "DufourModel G-11: a damage increment past dDMaxPerIncrement did NOT "
+                           "throw, so the solver was never asked to cut back, in " +
+                             std::string( __PRETTY_FUNCTION__ ) );
+
+  // And the same step with a small cSW must NOT throw: the limiter may not fire spuriously.
+  card[20]    = 1.797;
+  bool threw2 = false;
+  try {
+    std::vector< double > sv2;
+    step( sv2, F, 0.0, 0.02, card );
+  }
+  catch ( const std::runtime_error& ) {
+    threw2 = true;
+  }
+  throwExceptionOnFailure( !threw2,
+                           "DufourModel G-11: the limiter fired on a normal increment at the "
+                           "calibrated cSW, which would make every run crawl, in " +
+                             std::string( __PRETTY_FUNCTION__ ) );
+}
+
 void testCompressionBranchDecays()
 {
   // The T <= 0 branch is E = 1.3 T, independent of the tension shape. Use the calibrated
@@ -749,6 +795,7 @@ int main()
     testNoReferenceRateMeansNoRateDependence,
     testRateExponentWithoutReferenceRateIsRefused,
     testCompressionBranchDecays,
+    testLargeDamageIncrementRequestsCutback,
     testDamagingRateTangent,
   };
 

@@ -28,6 +28,7 @@
 #pragma once
 #include "Marmot/MarmotDeformationMeasures.h"
 #include "Marmot/MarmotEnergyDensityFunctions.h"
+#include "Marmot/MarmotExceptions.h"
 #include "Marmot/MarmotFastorTensorBasics.h"
 #include "Marmot/MarmotFiniteStrainPlasticity.h"
 #include "Marmot/MarmotFiniteStrainViscoelasticity.h"
@@ -163,10 +164,34 @@ namespace Marmot::Materials {
      * unaffected either way: D = 1 landed at the same displacement to the micron and the peak
      * force changed by 0.01 %, because omega_f is zero before initiation in both forms.
      */
+    /** omega_f = 1 - exp( -(D-1)/dF ).  ONE definition, shared by the driver and the lagged path.
+     *
+     * A squared argument was tried twice on 20 Aug 2026 to remove the slope jump at D = 1. It
+     * delays the coarse-SLJ death from step 17 to step 92 but does NOT prevent it, and it overshoots
+     * the peak (9856 N against the measured 8566). Reverted. See the dD limiter below: the measured
+     * cause of the death is the damage increment per step, not the shape of omega_f.
+     */
     double omegaFOfDriver( const double D ) const { return D > 1.0 ? 1.0 - std::exp( -( D - 1.0 ) / dF ) : 0.0; }
 
-    /// d omega_f / dD. Equal to 1/dF at D = 1, i.e. the stiffness starts to fall at full rate.
+    /// d omega_f / dD.
     double dOmegaFOfDriver( const double D ) const { return D > 1.0 ? std::exp( -( D - 1.0 ) / dF ) / dF : 0.0; }
+
+    /** Largest damage increment accepted in one global increment.
+     *
+     * Measured 20 Aug 2026 over every SLJ and Arcan run to date. The separation is clean:
+     *
+     *   SURVIVED   max dD : 0.0424 (a045)  0.0461 (kC2ld2)  0.0665 (a000)  0.0743 (s=0.075)
+     *                       0.0913 (a090, the worst survivor)
+     *   DIED       max dD : 0.1179 (sq114, the mildest death)  0.1824 (kC2s114)  0.2567 (sq150)
+     *
+     * Everything that survived stayed below 0.092 and everything that died exceeded 0.117, so the
+     * limit sits in that gap. At 0.10 it never fires on any Arcan and always fires before the
+     * deaths. Exceeding it makes the material throw, the element sets pNewdT = 0.25, and the
+     * solver retakes the increment at a quarter step, which brings dD back inside the survivable
+     * range. This is a NUMERICAL tolerance, not a card entry: it changes how finely the D = 1
+     * crossing is resolved, never how much damage accumulates.
+     */
+    inline const static double dDMaxPerIncrement = 0.10;
 
     /** Softening variable and its derivative w.r.t. the (weighted) driving strain.
      *
@@ -543,6 +568,15 @@ namespace Marmot::Materials {
         g        = std::max( g, 0.0 ); // damage is irreversible under monotonic loading
 
         D = D_old + cSW * g * dAlphaPBar;
+
+        // ASK THE SOLVER FOR A SMALLER STEP rather than let D leap past the threshold.
+        // The element catches any std::runtime_error from the material, sets pNewdT = 0.25 and
+        // returns, and the EdelweissFE wrapper turns that into a CutbackRequest. Nothing else is
+        // needed: the whole chain already existed and only this throw was missing.
+        if ( D - D_old > dDMaxPerIncrement )
+          throw Marmot::StressUpdateFailed( "DufourModel: damage increment " + std::to_string( D - D_old ) +
+                                            " exceeds the limit " + std::to_string( dDMaxPerIncrement ) +
+                                            "; a smaller time step is requested" );
 
         if ( D > 1.0 ) {
           omega_f = omegaFOfDriver( D );
