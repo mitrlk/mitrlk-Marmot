@@ -677,7 +677,10 @@ void testDamagingRateTangent()
   // 0.364) and lands the check near the elastic-plastic transition for large s, where the FINITE
   // DIFFERENCE is inaccurate. That produced a spurious "error grows with s" signal (up to 0.019)
   // and a false report of a tangent defect. Held at one state, the tangent is exact for every s.
-  for ( double sVal : { 0.0, 0.0435, 0.075, 0.114, 0.15 } ) {
+  // 0.22 and 0.30 added 20 Aug 2026: those are the values the SLJ runs actually use, and the
+  // rate term was moved from E to g, so the reported sensitivity changed from -s E to -s. The
+  // test had never covered the range being run.
+  for ( double sVal : { 0.0, 0.0435, 0.075, 0.114, 0.15, 0.22, 0.30 } ) {
     const bool   rateOn = sVal > 0.0;
     const double err    = damagingTangentError( sVal, rateOn );
     throwExceptionOnFailure( err < 1e-3,

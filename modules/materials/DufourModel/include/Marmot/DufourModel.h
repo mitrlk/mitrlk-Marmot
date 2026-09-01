@@ -258,7 +258,23 @@ namespace Marmot::Materials {
       // T < 0 is already below 1.
       double E;
       if ( T <= 0.0 ) {
-        E = swdfmExponent * T;
+        // The compression branch uses the SAME slope as the tension branch at the origin, namely
+        // E'( 0 ) = b0^2. That makes E C1 at T = 0 for ANY b0, so b0 becomes a genuinely FREE
+        // fitted parameter instead of being pinned to sqrt( swdfmExponent ).
+        //
+        // WHY, 27 Aug 2026. b0 = sqrt( 1.3 ) was chosen only to match the hardcoded Rice-Tracey
+        // constant of this branch. That pin fixed the whole low-triaxiality behaviour of the
+        // driver to a void-growth coefficient borrowed from a different regime, and nothing on
+        // this adhesive measures it. Measured consequence: at T = 0.2 to 0.5, the mid-bond
+        // material a crack has to travel through, the pinned form gives g = 1.30 and 2.01 where
+        // the retired cubic gave 1.73 and 2.40. That is why the joint's crack creeps instead of
+        // running. Released, the monotone form reproduces the cubic to 6x better rms and wants
+        // E'( 0 ) ~ 3.97.
+        //
+        // Monotonicity is untouched: E' = ( b0 + b1 T + b2 T^2 )^2 >= 0 still holds for any
+        // parameters. swdfmExponent = 1.3 remains only as the DEFAULT when b0 is not supplied.
+        const double slope0 = swdfmB0 != 0.0 ? swdfmB0 * swdfmB0 : swdfmExponent;
+        E                   = slope0 * T;
       }
       else {
         // CAP: above the calibrated range the weight is held at its last evidenced value.
