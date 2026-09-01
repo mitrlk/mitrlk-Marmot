@@ -52,6 +52,10 @@ namespace Marmot::Materials {
       // saturation value of the SOFTENING variable (Nguyen's Ds_inf); 0/absent -> 1.0
       // quartic term of the exponent, and the triaxiality above which g is held constant
       swdfmTCap( swdfmExtra( materialProperties, nMaterialProperties, 5 ) ),
+      // local Gaussian bump on g: amplitude, centre, width. A = 0 -> previous model exactly.
+      swdfmBumpA( swdfmExtra( materialProperties, nMaterialProperties, 6 ) ),
+      swdfmBumpTc( swdfmExtra( materialProperties, nMaterialProperties, 7 ) ),
+      swdfmBumpW( swdfmExtra( materialProperties, nMaterialProperties, 8 ) ),
       // quadratic acceleration of the softening tail; 0/absent -> the plain exponential
       // localizing gradient damage: floor R of the interaction function, and its steepness eta
       // optional generalized-Maxwell entries from 27 on; absent or nMaxwell = 0 reproduces the

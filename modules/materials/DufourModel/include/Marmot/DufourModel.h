@@ -123,6 +123,27 @@ namespace Marmot::Materials {
     const double swdfmB0, swdfmB1, swdfmB2, swdfmKdotRef, swdfmS;
 
     // ------------------------------------------------------------------------------------------
+    // LOCAL BUMP on g -- OPTIONAL, entries [6..8] of the swdfmExtra block.
+    //
+    //   g(T) = exp( E(T) ) * [ 1 + A exp( -( (T - Tc) / w )^2 ) ] * w_rate(kdot)
+    //
+    // WHY. Measured 2026-08-28 on the calibrated runs: the single-lap joint is the ONLY specimen
+    // that samples T = 0.38 to 0.88. That band carries 62 % of the joint's damage driver, 2 % of
+    // Arcan 90's, and exactly 0 % of Arcan 45's and Arcan 0's. Raising g there therefore moves the
+    // joint and almost nothing else.
+    //
+    // The alternative was to raise E'(0), which does move the joint (peak error +13.1 % -> +1.3 %)
+    // but drags the SHARED low-triaxiality band: Arcan 90's failure displacement went 0.96 -> 0.85
+    // of the measured value. A polynomial cannot separate the two bands -- raising E'(0) lifts the
+    // shared band 1.744x while lifting the joint-only band only 1.344x, the wrong ratio -- and a
+    // fourth polynomial coefficient buys only 1.06x on the joint at fixed Arcans, because a quartic
+    // is too smooth to rise between two neighbours. A Gaussian is local by construction.
+    //
+    // A = 0 (or absent) reproduces the previous model EXACTLY. The bump decays to 1, so g returns
+    // to the polynomial curve outside the band and cannot diverge at high T the way a quartic does.
+    const double swdfmBumpA, swdfmBumpTc, swdfmBumpW;
+
+    // ------------------------------------------------------------------------------------------
     // QUARTIC term and the EXTRAPOLATION CAP -- OPTIONAL, entries [37 + 3 nMaxwell] and
     // [38 + 3 nMaxwell]:
     //
@@ -317,6 +338,13 @@ namespace Marmot::Materials {
       // branch gets it too. This matters for the joint: about 90 % of its bondline sits at
       // T ~ 0, and under the old code that region had NO rate factor at all.
       // ------------------------------------------------------------------------------------
+      // LOCAL BUMP, multiplicative on g, therefore additive on the exponent. Applied on BOTH
+      // branches and to the UNCAPPED T, since the bump is local and dies away on its own.
+      if ( swdfmBumpA != 0.0 && swdfmBumpW > 0.0 ) {
+        const double z = ( T - swdfmBumpTc ) / swdfmBumpW;
+        E += std::log1p( swdfmBumpA * std::exp( -z * z ) );
+      }
+
       if ( swdfmKdotRef > 0.0 ) {
         const double s = swdfmS < 0.0 ? n : swdfmS; // sentinel: tie the rate exponent to n
         E += -s * std::log( std::max( kdot, swdfmKdotMin ) / swdfmKdotRef );
@@ -370,8 +398,8 @@ namespace Marmot::Materials {
     inline const static int idxNMaxwell  = 23; // was 27
     inline const static int idxPronyBase = 24; // was 28; branch i occupies [24+3i .. 26+3i]
     // swdfmExtra offsets, counted from idxPronyBase + 3 nMaxwell:
-    //   0 b0, 1 b1, 2 b2, 3 kdotRef, 4 s, 5 TCap
-    inline const static int nSwdfmExtra = 6;
+    //   0 b0, 1 b1, 2 b2, 3 kdotRef, 4 s, 5 TCap, 6 bumpA, 7 bumpTc, 8 bumpW
+    inline const static int nSwdfmExtra = 9;
 
     const int nMaxwell;
 
