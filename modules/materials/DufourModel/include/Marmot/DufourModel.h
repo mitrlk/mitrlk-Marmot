@@ -71,9 +71,11 @@ namespace Marmot::Materials {
     // Abrari Vajari, Neuner, Kammardi Arunachala, Ziccarelli, Deierlein, Linder,
     // CMAME 400 (2022) 115467, eq. (65)-(66), after Rice & Tracey and Smith et al.:
     //
-    //   D = cSW * int [ exp( 1.3 T ) - 1/bSW * exp( -1.3 T ) ] * exp( kSW ( |zeta| - 1 ) ) dAlphaP
+    //   D = cSW * int [ exp( E(T) ) - 1/bSW * exp( -E(T) ) ] * w( kdot ) dAlphaP
     //
-    // with T the stress triaxiality and zeta = cos( 3 theta ) the Lode angle PARAMETER.
+    // with T the stress triaxiality. THERE IS NO LODE TERM: the published form carries one, this
+    // model does not. Measured 2026-08-26, zeta correlates with T at r = +0.937 across all four
+    // specimens, so a Lode term would duplicate what T already carries.
     // Crack initiation at D = 1; dF then governs how fast omega grows past initiation.
     //
     // cSW = 0 reproduces the unscaled original model EXACTLY (see computeOmega).
@@ -110,9 +112,9 @@ namespace Marmot::Materials {
     //   [E+5]     swdfmTCap     cap on T before evaluating E. 0 = no cap.
     //
     // NOTHING ELSE. Twelve parameters were deleted on 20 Aug 2026 rather than left as inert
-    // placeholders: kSW, volDriver, Xt, Xc, swdfmC1, swdfmC2, swdfmC3, dsInf, swdfmC4, swdfmBeta,
-    // swdfmLocR, swdfmLocEta. The constructor refuses a card that still carries them, because the
-    // old 60-entry layout put dF at [23], which is now nMaxwell, and would read as zero branches.
+    // placeholders. They are gone from the code entirely; the constructor REFUSES a card that
+    // still carries them, because the old 60-entry layout put dF at [23], which is now nMaxwell
+    // and would silently read as zero Maxwell branches.
     //
     // T <= 0 uses E = swdfmExponent * T = 1.3 T. A single polynomial cannot behave on both sides
     // of T = 0: the even powers stay positive while the odd ones flip, so the tension coefficients
@@ -144,59 +146,35 @@ namespace Marmot::Materials {
     const double swdfmBumpA, swdfmBumpTc, swdfmBumpW;
 
     // ------------------------------------------------------------------------------------------
-    // QUARTIC term and the EXTRAPOLATION CAP -- OPTIONAL, entries [37 + 3 nMaxwell] and
-    // [38 + 3 nMaxwell]:
+    // EXTRAPOLATION CAP -- OPTIONAL, swdfmExtra entry [5].
     //
-    //   [37 + 3 nMaxwell]  swdfmC4    coefficient of T^4 in the cubic-form exponent
-    //   [38 + 3 nMaxwell]  swdfmTCap  triaxiality above which g is HELD CONSTANT; 0 -> no cap
+    //   g is evaluated at min( T, swdfmTCap ).  0 -> no cap.
     //
-    //   E(T) = c1 T + c2 T^2 + c3 T^3 + c4 T^4 ,   evaluated at min(T, swdfmTCap)
+    // WHY IT MATTERS. g is constrained by data over T = 0 to 1.21 only, and E is a quintic, so
+    // above the calibrated range it explodes. On the recommended card b = (2.4695, -5.0171,
+    // 0.8460):  g(1.21) = 10,  g(1.40) = 27,  g(1.60) = 300.  On the earlier E'(0) = 6.00 card it
+    // was far worse: g(1.60) = 16330.
     //
-    // WHY THE QUARTIC. The required weight is NON-MONOTONE (ledger 28.2): at the cSW that Arcan
-    // 90 deg pins (1.88, because 90 deg sits at T ~ 0 where g == 1) the four specimens demand
-    // g(0) = 1.01, g(0.584) = 3.38 (SLJ), g(0.806) = 2.62 (Arcan 45 deg), g(1.087) = 5.66 (0 deg).
-    // g must PEAK near T ~ 0.6 and DIP by T ~ 0.85. A cubic cannot hold that and still rise steeply
-    // afterwards; the calibrated quartic
-    //
-    //   E(T) = -0.07 T + 18.12 T^2 - 35.58 T^3 + 18.85 T^4 ,   cSW = 1.754
-    //
-    // turns at T = 0.559 and 0.854 -- essentially exactly the SLJ's hot element and Arcan 45 deg --
-    // and collapses the four SPECIMEN medians to 1.11x, below the 1.18-1.37x rate-scatter floor.
-    // The physical reading is cavitation of the rubber phase: it needs hydrostatic tension to switch
-    // on but is suppressed again at high constraint, so it has a WINDOW, superposed on Rice-Tracey
-    // void growth at high T. Monotone forms are structurally incapable and were the reason nothing
-    // worked; the monotonicity rule of ledger 25.6 was itself the error.
-    //
-    // WHY THE CAP IS NOT OPTIONAL IN PRACTICE. g is constrained by data at FOUR triaxialities only
-    // (0, 0.584, 0.806, 1.087). Beyond the last one the quartic explodes:
-    //   g(1.087) = 7.0   g(1.15) = 15.5   g(1.20) = 37.1   g(1.30) = 493   g(1.50) = 9.0e6
     // A thin adhesive layer between stiff substrates in pure tension -- a BUTT JOINT -- approaches
-    // hydrostatic tension and sits well above T = 1.1. Uncapped, this card would give such a
-    // geometry a damage rate thousands of times too high and fail it at first load. With
-    // swdfmTCap = 1.10 the model instead HOLDS the last value it has evidence for, which is a
-    // statement about the calibration range rather than an invented trend.
+    // hydrostatic tension and sits above T = 1.1. Uncapped, such a geometry gets a damage rate
+    // orders of magnitude too high and fails at first load. The cap instead HOLDS the last value
+    // the calibration has evidence for, which is a statement about the calibration range rather
+    // than an invented trend.
+    //
+    // A 30-line block here used to document a swdfmC4 quartic coefficient with its own calibrated
+    // values. THAT PARAMETER DOES NOT EXIST -- it was deleted on 20 Aug 2026 with eleven others.
+    // Removed 2026-09-01.
     const double swdfmTCap;
 
-    /** omega_f from the driver. ONE definition, used both by computeOmega and by the lagged
-     *  interaction gate, so the two cannot drift apart. */
-    /** The failure variable as a function of the driver.
+    /** omega_f = 1 - exp( -(D-1)/dF ).  ONE definition, so the law and its derivative below
+     *  cannot drift apart.
      *
-     * omega_f = 1 - exp( -(D-1)/dF ).  ONE definition, used by the driver and by the lagged path.
-     *
-     * A squared argument was tried on 20 Aug 2026 to remove the slope jump at D = 1, on the
-     * reasoning that a point begins to lose stiffness at full rate 1/dF the instant it crosses the
-     * threshold. It did let the coarse SLJ pass D = 1 and keep converging, where the linear form
-     * died at step 17. But it overshot badly: the SLJ peak went to 9836 N against the measured
-     * 8566, a ratio of 1.148, where the linear form gave 1.035. REVERTED. The Arcans were nearly
-     * unaffected either way: D = 1 landed at the same displacement to the micron and the peak
-     * force changed by 0.01 %, because omega_f is zero before initiation in both forms.
-     */
-    /** omega_f = 1 - exp( -(D-1)/dF ).  ONE definition, shared by the driver and the lagged path.
-     *
-     * A squared argument was tried twice on 20 Aug 2026 to remove the slope jump at D = 1. It
-     * delays the coarse-SLJ death from step 17 to step 92 but does NOT prevent it, and it overshoots
-     * the peak (9856 N against the measured 8566). Reverted. See the dD limiter below: the measured
-     * cause of the death is the damage increment per step, not the shape of omega_f.
+     * A SQUARED argument was tried twice on 20 Aug 2026 to remove the slope jump at D = 1. It
+     * delayed the coarse-SLJ death from step 17 to step 92 but did not prevent it, and it
+     * overshot the peak: 9856 N against the measured 8566, where the linear form gives 1.035x.
+     * REVERTED. The measured cause of that death is the damage increment per step, not the shape
+     * of omega_f -- see dDMaxPerIncrement below. The Arcans were unaffected either way, because
+     * omega_f is identically zero before initiation in both forms.
      */
     double omegaFOfDriver( const double D ) const { return D > 1.0 ? 1.0 - std::exp( -( D - 1.0 ) / dF ) : 0.0; }
 
@@ -223,9 +201,11 @@ namespace Marmot::Materials {
     /** Softening variable and its derivative w.r.t. the (weighted) driving strain.
      *
      * ONE function so the law, its derivative and the tests cannot drift apart.
-     *   omega_s = Ds_inf ( 1 - E ),  E = exp( -x - beta x^2 ),  x = kappa_bar / epsF
-     *   d omega_s / d kappa_bar = Ds_inf E ( 1 + 2 beta x ) / epsF
-     * At x = 0 that is Ds_inf / epsF for every beta -- the property the whole choice rests on.
+     *   omega_s = 1 - E,  E = exp( -x ),  x = kappa_bar / epsF
+     *   d omega_s / d kappa_bar = E / epsF
+     * At x = 0 that is 1 / epsF, which is what fixes the initial softening slope.
+     * There is no saturation value and no quadratic term: an earlier version of this comment
+     * described Ds_inf and beta, neither of which exists in the code.
      */
     void softening( const double kbar, double& omega_s, double& dOmega_s ) const
     {
@@ -654,10 +634,9 @@ namespace Marmot::Materials {
       // ---- (1) SOFTENING variable: the original law, ALWAYS active and already calibrated.
       //          This is what reproduces the pre-peak response; removing it before initiation
       //          would lose the calibrated peak forces.
-      //          Ds_inf BOUNDS it (see the declaration): Nguyen's Ds saturates and CANNOT fail the
-      //          material; only the failure variable may. Ds_inf = 1 is the previous behaviour.
-      //          The tail may be TRUNCATED (epsFCut > 0): see the declaration of epsFCut. Both the
-      //          value and the derivative come from softening() so they cannot disagree.
+      //          Both the value and the derivative come from softening() so they cannot disagree.
+      //          There is no saturation bound and no tail truncation: earlier text here referred to
+      //          Ds_inf and epsFCut, neither of which exists.
       double omega_s, dOmega_s;
       softening( alphaP_weighted, omega_s, dOmega_s );
 
@@ -672,9 +651,6 @@ namespace Marmot::Materials {
       if ( cSW != 0.0 ) {
         const double T = std::min( std::max( triaxiality( tau_eff ), etaMin ), etaMax );
 
-        // When the driver is already the dilatant plastic volume, the Rice-Tracey factor would
-        // DOUBLE-COUNT the pressure sensitivity (exp(1.3T) dAlphaP is itself a void-growth
-        // proxy), so it is switched off and the stress-state dependence comes from alphaD alone.
         // The driver increment is needed BEFORE g, because g may depend on the RATE at which the
         // driver accumulates (see swdfmLogG). dTCurrent is set at the top of computeStress.
         const double dAlphaPBar = std::max( alphaP_weighted - alphaPBar_old, 0.0 );

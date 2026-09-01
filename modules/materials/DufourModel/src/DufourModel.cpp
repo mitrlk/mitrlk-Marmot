@@ -35,30 +35,27 @@ namespace Marmot::Materials {
       ld( materialProperties[17] ),
       m( materialProperties[18] ),
       density( nMaterialProperties > 19 ? materialProperties[19] : 0.0 ),
-      // optional SWDFM entries 21-24; cSW absent or 0 -> unscaled (original) damage evolution.
-      // bSW defaults to a large value (compression term switched off) and kSW to 0 (no Lode
-      // dependence) so that only cSW has to be supplied to activate the driver.
+      // optional SWDFM entries 21-23; cSW absent or 0 -> unscaled (original) damage evolution.
+      // bSW defaults to a large value, which switches the compression term off, so only cSW has
+      // to be supplied to activate the driver.
       cSW( nMaterialProperties > 20 ? materialProperties[20] : 0.0 ),
       bSW( nMaterialProperties > 21 ? materialProperties[21] : 1e6 ),
       dF( nMaterialProperties > 22 ? materialProperties[22] : 1.0 ),
-      // cubic-exponent Rice-Tracey weight: the three entries AFTER the Prony triplets, in the
-      // order (T^2, T^3, T). All absent -> 0 -> the published single-branch exp( 1.3 T ).
-      // monotone-by-construction exponent + rate-dependent T-sensitivity; all absent -> the cubic
+      // Exponent shape and rate weight, the entries AFTER the Prony triplets.
+      // E'(T) = ( b0 + b1 T + b2 T^2 )^2, so E is monotone by construction. All absent -> the
+      // published single-branch exp( swdfmExponent * T ).
       swdfmB0( swdfmExtra( materialProperties, nMaterialProperties, 0 ) ),
       swdfmB1( swdfmExtra( materialProperties, nMaterialProperties, 1 ) ),
       swdfmB2( swdfmExtra( materialProperties, nMaterialProperties, 2 ) ),
       swdfmKdotRef( swdfmExtra( materialProperties, nMaterialProperties, 3 ) ),
       swdfmS( swdfmExtra( materialProperties, nMaterialProperties, 4 ) ),
-      // saturation value of the SOFTENING variable (Nguyen's Ds_inf); 0/absent -> 1.0
-      // quartic term of the exponent, and the triaxiality above which g is held constant
+      // triaxiality above which g is HELD CONSTANT; 0/absent -> no cap
       swdfmTCap( swdfmExtra( materialProperties, nMaterialProperties, 5 ) ),
       // local Gaussian bump on g: amplitude, centre, width. A = 0 -> previous model exactly.
       swdfmBumpA( swdfmExtra( materialProperties, nMaterialProperties, 6 ) ),
       swdfmBumpTc( swdfmExtra( materialProperties, nMaterialProperties, 7 ) ),
       swdfmBumpW( swdfmExtra( materialProperties, nMaterialProperties, 8 ) ),
-      // quadratic acceleration of the softening tail; 0/absent -> the plain exponential
-      // localizing gradient damage: floor R of the interaction function, and its steepness eta
-      // optional generalized-Maxwell entries from 27 on; absent or nMaxwell = 0 reproduces the
+      // optional generalized-Maxwell entries from 24 on; absent or nMaxwell = 0 reproduces the
       // purely hyperelastic-viscoplastic model exactly.
       nMaxwell( nMaterialProperties > idxNMaxwell ? static_cast< int >( materialProperties[idxNMaxwell] ) : 0 ),
       maxwellDev( makeMaxwellProperties( materialProperties, nMaterialProperties, 0 ) ),
@@ -137,10 +134,14 @@ namespace Marmot::Materials {
     double&         alphaPBar    = stateVars->alphaPBar;
     const double    alphaPBarOld = alphaPBar;
 
-    // LOCALIZING GRADIENT DAMAGE (Poh & Sun 2017): the interaction length COLLAPSES in material
-    // that has already started to fail, so a forming crack stops transferring energy into its
-    // neighbours. Gated on the STORED driver (lagged one increment) so l is constant within the
-    // increment and the element tangent stays exact. R = 0 / absent -> g == 1 -> unchanged.
+    // The interaction radius is the CARD VALUE and is constant, in space and in time.
+    //
+    // NOT IMPLEMENTED: a localizing formulation in which the radius collapses once a point starts
+    // to fail (Poh & Sun 2017). An earlier comment here described that as if it were active; it
+    // never was, and there is no R parameter anywhere in this model. Removed 2026-09-01 because
+    // reading it cost real time. If it is ever built it needs a card slot and a tangent term, and
+    // note that it does NOT relax the mesh requirement: the mesh must then resolve the COLLAPSED
+    // radius, which is smaller.
     response.nonlocalradius = ld;
     double alphaP_nonlocal  = deformation.A;
 
