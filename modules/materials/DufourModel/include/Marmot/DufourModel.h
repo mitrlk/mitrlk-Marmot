@@ -110,7 +110,6 @@ namespace Marmot::Materials {
     //                           MEASURED 20 Aug 2026: the SLJ accumulates kappa_bar at 0.0016 /s
     //                           and the Arcans at 19.6 .. 36 /s, so the ratio is 22000, not the
     //                           ~2000 stated here before.
-    //   [E+5]     swdfmTCap     cap on T before evaluating E. 0 = no cap.
     //
     // NOTHING ELSE. Twelve parameters were deleted on 20 Aug 2026 rather than left as inert
     // placeholders. They are gone from the code entirely; the constructor REFUSES a card that
@@ -128,7 +127,7 @@ namespace Marmot::Materials {
     // ------------------------------------------------------------------------------------------
     // LOCAL BUMP on g -- OPTIONAL, entries [6..8] of the swdfmExtra block.
     //
-    //   g(T) = exp( E(T) ) * [ 1 + A exp( -( (T - Tc) / w )^2 ) ] * w_rate(kdot)
+    //   g(T) = exp( E(T) ) * w_rate(kdot)
     //
     // WHY. Measured 2026-08-28 on the calibrated runs: the single-lap joint is the ONLY specimen
     // that samples T = 0.38 to 0.88. That band carries 62 % of the joint's damage driver, 2 % of
@@ -144,12 +143,10 @@ namespace Marmot::Materials {
     //
     // A = 0 (or absent) reproduces the previous model EXACTLY. The bump decays to 1, so g returns
     // to the polynomial curve outside the band and cannot diverge at high T the way a quartic does.
-    const double swdfmBumpA, swdfmBumpTc, swdfmBumpW;
 
     // ------------------------------------------------------------------------------------------
     // EXTRAPOLATION CAP -- OPTIONAL, swdfmExtra entry [5].
     //
-    //   g is evaluated at min( T, swdfmTCap ).  0 -> no cap.
     //
     // WHY IT MATTERS. g is constrained by data over T = 0 to 1.21 only, and E is a quintic, so
     // above the calibrated range it explodes. On the recommended card b = (2.4695, -5.0171,
@@ -165,7 +162,6 @@ namespace Marmot::Materials {
     // A 30-line block here used to document a swdfmC4 quartic coefficient with its own calibrated
     // values. THAT PARAMETER DOES NOT EXIST -- it was deleted on 20 Aug 2026 with eleven others.
     // Removed 2026-09-01.
-    const double swdfmTCap;
 
     /** omega_f = 1 - exp( -(D-1)/dF ).  ONE definition, so the law and its derivative below
      *  cannot drift apart.
@@ -280,7 +276,6 @@ namespace Marmot::Materials {
       }
       else {
         // CAP: above the calibrated range the weight is held at its last evidenced value.
-        const double Tc = swdfmTCap > 0.0 ? std::min( T, swdfmTCap ) : T;
 
         // THE ONLY EXPONENT FORM.  E(T) = INT_0^T ( b0 + b1 s + b2 s^2 )^2 ds, expanded.
         // E' = ( b0 + b1 T + b2 T^2 )^2 >= 0 for ANY b0, b1, b2, so E cannot decrease with
@@ -291,9 +286,9 @@ namespace Marmot::Materials {
         // Calibrated 20 Aug 2026: ( b0, b1, b2 ) = ( 1.1402, -0.4450, 0.9725 ). Measured Arcan
         // failure displacement against experiment: 1.005 / 0.953 / 1.067 at 0 / 45 / 90 deg.
         const double b0 = swdfmB0, b1 = swdfmB1, b2 = swdfmB2;
-        E = ( ( ( ( b2 * b2 / 5.0 ) * Tc + b1 * b2 / 2.0 ) * Tc + ( b1 * b1 + 2.0 * b0 * b2 ) / 3.0 ) * Tc + b0 * b1 ) *
-              Tc * Tc +
-            b0 * b0 * Tc;
+        E = ( ( ( ( b2 * b2 / 5.0 ) * T + b1 * b2 / 2.0 ) * T + ( b1 * b1 + 2.0 * b0 * b2 ) / 3.0 ) * T + b0 * b1 ) *
+              T * T +
+            b0 * b0 * T;
       }
 
       // ------------------------------------------------------------------------------------
@@ -321,10 +316,6 @@ namespace Marmot::Materials {
       // ------------------------------------------------------------------------------------
       // LOCAL BUMP, multiplicative on g, therefore additive on the exponent. Applied on BOTH
       // branches and to the UNCAPPED T, since the bump is local and dies away on its own.
-      if ( swdfmBumpA != 0.0 && swdfmBumpW > 0.0 ) {
-        const double z = ( T - swdfmBumpTc ) / swdfmBumpW;
-        E += std::log1p( swdfmBumpA * std::exp( -z * z ) );
-      }
 
       if ( swdfmKdotRef > 0.0 ) {
         // SENTINEL. swdfmS == swdfmSTieToN (-1) means "tie the rate exponent to n". Any OTHER

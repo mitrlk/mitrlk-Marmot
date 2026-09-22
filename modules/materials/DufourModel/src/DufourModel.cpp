@@ -49,12 +49,10 @@ namespace Marmot::Materials {
       swdfmB2( swdfmExtra( materialProperties, nMaterialProperties, 2 ) ),
       swdfmKdotRef( swdfmExtra( materialProperties, nMaterialProperties, 3 ) ),
       swdfmS( swdfmExtra( materialProperties, nMaterialProperties, 4 ) ),
-      // triaxiality above which g is HELD CONSTANT; 0/absent -> no cap
-      swdfmTCap( swdfmExtra( materialProperties, nMaterialProperties, 5 ) ),
-      // local Gaussian bump on g: amplitude, centre, width. A = 0 -> previous model exactly.
-      swdfmBumpA( swdfmExtra( materialProperties, nMaterialProperties, 6 ) ),
-      swdfmBumpTc( swdfmExtra( materialProperties, nMaterialProperties, 7 ) ),
-      swdfmBumpW( swdfmExtra( materialProperties, nMaterialProperties, 8 ) ),
+      // RETIRED 2026-09-22: swdfmExtra entries [5] (triaxiality cap) and [6..8] (local Gaussian
+      // bump on g). Neither was in use: every deck on disk carries TCap = 0 and stops at 51
+      // entries, so the bump was never supplied. The card is POSITIONAL, so the slots stay part
+      // of the layout and every archived deck keeps parsing at the same offsets.
       // optional generalized-Maxwell entries from 24 on; absent or nMaxwell = 0 reproduces the
       // purely hyperelastic-viscoplastic model exactly.
       nMaxwell( nMaterialProperties > idxNMaxwell ? static_cast< int >( materialProperties[idxNMaxwell] ) : 0 ),
