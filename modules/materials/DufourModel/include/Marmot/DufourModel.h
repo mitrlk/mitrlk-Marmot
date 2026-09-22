@@ -102,7 +102,8 @@ namespace Marmot::Materials {
     //                        and b2 are fitted, against the Arcan 0 deg and 45 deg points.
     //                        Calibrated: ( 1.1402, -0.4450, 0.9725 ). MANDATORY when cSW != 0.
     //   [E+3]     swdfmKdotRef  reference rate [1/s], calibrated 20. 0 switches the rate term off.
-    //   [E+4]     swdfmS        rate exponent. NEGATIVE is a sentinel meaning "use n".
+    //   [E+4]     swdfmS        rate exponent. EXACTLY -1 is a sentinel meaning "use n"; any other
+    //                             negative value is a genuine negative exponent (w rises with kdot).
     //                           w = ( kdot / kdotRef )^( -s ), and g = exp( E ) * w, i.e. the
     //                           weight MULTIPLIES g and is not applied to its exponent.
     //                           The ONLY parameter that separates the SLJ from the Arcans.
@@ -326,7 +327,14 @@ namespace Marmot::Materials {
       }
 
       if ( swdfmKdotRef > 0.0 ) {
-        const double s = swdfmS < 0.0 ? n : swdfmS; // sentinel: tie the rate exponent to n
+        // SENTINEL. swdfmS == swdfmSTieToN (-1) means "tie the rate exponent to n". Any OTHER
+        // negative value is a GENUINE negative exponent, which makes w RISE with kdot, i.e. the
+        // adhesive damages FASTER when loaded faster. Measured 2026-09-05: the joint loses 105,
+        // 119 and 184 % of peak per mm at 1 mm/min, 10 mm/min and 10 mm/s, and the Arcan 45 and
+        // 90 deg fail at 0.92 and 0.82 of their slow-rate displacement at 100x the rate. Both say
+        // the material embrittles with rate; a positive s does the opposite. Before 2026-09-06 any
+        // s < 0 was swallowed by this sentinel, so a negative exponent could not be entered.
+        const double s = ( swdfmS == swdfmSTieToN ) ? n : swdfmS;
         E += -s * std::log( std::max( kdot, swdfmKdotMin ) / swdfmKdotRef );
         // log w = -s ln( kdot / kdotRef )  =>  kdot dE/dkdot = -s exactly, a CONSTANT. The old
         // multiplicative form gave -s E, which grew with the exponent and made the return map
@@ -593,6 +601,10 @@ namespace Marmot::Materials {
     inline const static double swdfmExponent = 1.3;
 
     /// eta beyond these bounds is clamped so that epsF_eff stays bounded away from 0 and infinity.
+    /** Sentinel value for @c swdfmS meaning "use n as the rate exponent". Any other negative
+     *  value of swdfmS is a genuine negative exponent. */
+    inline const static double swdfmSTieToN = -1.0;
+
     inline const static double etaMin = -0.5;
     inline const static double etaMax = 1.2;
 
