@@ -1325,6 +1325,68 @@ void testAxiSymmetricHomogeneousRadialExpansionIsInEquilibrium()
                              std::to_string( rBottom ) + ", " + std::to_string( rTop ) + ")." );
 }
 
+// The axisymmetric kernels store the energies of a quadrature point integrated over the revolution, i.e. the
+// densities times J0 w 2 pi r. FiniteStrainJ2Plasticity adds its plastic work to the dissipation it is handed, and
+// nothing in an elastic increment. So the stored dissipation stays the same over an elastic increment only if the
+// element hands the material the density, divided by the same weight.
+void testAxiSymmetricComputeKernelsHandsTheMaterialTheDissipationDensity()
+{
+  const auto intType = Marmot::Discretizations::Elements::Quadrature::IntegrationTypes::FullIntegration;
+  const auto secType = DisplacementFiniteStrainULElement< 2, 4 >::SectionType::PlaneStrain;
+
+  const std::vector< double > nodeCoordsVec = { 1.0, 0.0, 2.0, 0.0, 2.0, 1.0, 1.0, 1.0 };
+
+  auto element = std::make_unique< AxiSymmetricDisplacementFiniteStrainULElement< 4 > >( 1, intType, secType );
+  element->assignNodeCoordinates( nodeCoordsVec.data() );
+
+  // K, G, fy, fyInf, eta, H, implementationType, density: the yield stress is far above the stress of the
+  // increment below, so the increment is elastic
+  const std::vector< double >              matProps = { 1.0, 1.0, 1e6, 1e6, 1.0, 0.0, 1.0, 1.0 };
+  Marmot::Discretizations::MaterialSection materialSection( "FINITESTRAINJ2PLASTICITY",
+                                                            matProps.data(),
+                                                            static_cast< int >( matProps.size() ) );
+  element->assignProperty( materialSection );
+  const std::vector< double >                elPropsVec = { 1.0 }; // dummy thickness; see comment above
+  Marmot::Discretizations::ElementProperties elProps( elPropsVec.data(), static_cast< int >( elPropsVec.size() ) );
+  element->assignProperty( elProps );
+
+  const int             nStateVarsTotal = element->getNumberOfRequiredStateVars();
+  std::vector< double > stateVars( nStateVarsTotal, 0.0 );
+  element->assignStateVars( stateVars.data(), nStateVarsTotal );
+  element->initializeYourself();
+  element->setInitialConditions( Marmot::Discretizations::Elements::Element::MarmotMaterialInitialization, nullptr );
+
+  // a dissipation density of 0.25 at every quadrature point, integrated as the element integrates it
+  const double                               dissipationDensity = 0.25;
+  const std::vector< std::vector< double > > qpCoordinates      = element->getCoordinatesAtQuadraturePoints();
+  std::vector< double >                      storedDissipation;
+  for ( size_t i = 0; i < element->qps.size(); i++ ) {
+    auto& qp                         = element->qps[i];
+    qp.managedStateVars->dissipation = dissipationDensity * qp.J0xW * 2 * Marmot::Math::Constants::Pi *
+                                       qpCoordinates[i][0];
+    storedDissipation.push_back( qp.managedStateVars->dissipation );
+  }
+
+  const int       nDof = element->getNDofPerElement();
+  Eigen::VectorXd Q( nDof );
+  for ( int i = 0; i < nDof; i++ )
+    Q[i] = 0.01 * std::sin( 1.3 * ( i + 1 ) );
+  const Eigen::VectorXd dQ = Q;
+  Eigen::VectorXd       P  = Eigen::VectorXd::Zero( nDof );
+  Eigen::MatrixXd       K  = Eigen::MatrixXd::Zero( nDof, nDof );
+
+  // computeKernels() is private in the axisymmetric class; see the comment above
+  Marmot::Discretizations::Elements::Element& asElement = *element;
+  asElement.computeKernels( Q.data(), dQ.data(), P.data(), K.data(), 0.0, 1.0 );
+
+  for ( size_t i = 0; i < element->qps.size(); i++ )
+    throwExceptionOnFailure( checkIfEqual( element->qps[i].managedStateVars->dissipation, storedDissipation[i], 1e-12 ),
+                             "AxiSymmetricDisplacementFiniteStrainULElement: an elastic increment changed the stored "
+                             "dissipation from " +
+                               std::to_string( storedDissipation[i] ) + " to " +
+                               std::to_string( element->qps[i].managedStateVars->dissipation ) + "." );
+}
+
 int main()
 {
   auto tests = std::vector< std::function< void() > >{
@@ -1352,6 +1414,7 @@ int main()
     testAxiSymmetricComputeKernelsTangentMatchesNumericalDifferentiation,
     testAxiSymmetricComputeKernelsExplicitMatchesImplicitResidual,
     testAxiSymmetricHomogeneousRadialExpansionIsInEquilibrium,
+    testAxiSymmetricComputeKernelsHandsTheMaterialTheDissipationDensity,
   };
 
   executeTestsAndCollectExceptions( tests );

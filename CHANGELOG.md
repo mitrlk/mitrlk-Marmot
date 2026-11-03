@@ -108,6 +108,11 @@ All notable changes to Marmot are documented in this file. The format follows
   point for `GC3D20R`); equal-order elements store the non-local shape functions once.
 
 ### Fixed
+- **Results:** the axisymmetric finite-strain UL elements (`CX8UL`, `CX8RUL`) handed the material their stored
+  elastic energy and dissipation divided by `J0xW` instead of `J0xW 2πr`, the weight they are stored with, so the
+  material got the densities 2πr times too large. A material that carries them over (`FiniteStrainJ2Plasticity`,
+  the Hughes-Winget wrappers) therefore stored a wrong dissipation, and the element reported a wrong internal
+  energy. The materials in this repository do not use the two values for the stress.
 - **Results:** sign of the hoop term in the axisymmetric finite-strain UL elements (`CX8UL`, `CX8RUL`, residual and
   stiffness): it was subtracted, so any state with nonzero hoop stress was wrong (e.g. homogeneous radial expansion
   off by a factor of roughly 5–60). Uniaxial loading with zero hoop stress was unaffected.
