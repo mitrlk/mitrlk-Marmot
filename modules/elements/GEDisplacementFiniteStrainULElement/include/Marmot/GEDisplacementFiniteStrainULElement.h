@@ -27,9 +27,9 @@
  */
 #pragma once
 
-#include "Marmot/MarmotElementFactory.h"
 #include "Marmot/MarmotConstants.h"
 #include "Marmot/MarmotElement.h"
+#include "Marmot/MarmotElementFactory.h"
 #include "Marmot/MarmotElementProperty.h"
 #include "Marmot/MarmotFastorTensorBasics.h"
 #include "Marmot/MarmotFiniteElement.h"
@@ -470,9 +470,9 @@ namespace Marmot::Elements {
     for ( auto& qp : qps ) {
       qp.material = std::unique_ptr< Material >(
         MarmotLibrary::MarmotMaterialGradientEnhancedFiniteStrainFactory::createMaterial( section.materialName,
-                                                                                            section.materialProperties,
-                                                                                            section.nMaterialProperties,
-                                                                                            elLabel ) );
+                                                                                          section.materialProperties,
+                                                                                          section.nMaterialProperties,
+                                                                                          elLabel ) );
     }
   }
 
@@ -963,8 +963,9 @@ namespace Marmot::Elements {
         for ( int i = 0; i < 2; i++ )
           for ( int j = 0; j < 2; j++ ) {
             dTau_dqU( i, j, 0, B ) += algorithmicModuli3D.dTau_dF( i, j, 2, 2 ) * N( B ) / r;
-            dL_dqU( 0, B ) += algorithmicModuli3D.dL_dF( 2, 2 ) * N( B ) / r;
           }
+        // dL/dF33 dF33/dq_U(0, B), once per node
+        dL_dqU( 0, B ) += algorithmicModuli3D.dL_dF( 2, 2 ) * N( B ) / r;
         dTau33_dqU( 0, B ) += algorithmicModuli3D.dTau_dF( 2, 2, 2, 2 ) * N( B ) / r;
       }
 
@@ -986,6 +987,8 @@ namespace Marmot::Elements {
           }
           const double dF33_dN_qU_0 = ( N( B ) / r );
           k_UU( 0, A, 0, B ) += ( +N( A ) * dInvF33_dF33 * dF33_dN_qU_0 * response3D.tau( 2, 2 ) / r ) * J0xWxRx2Pi;
+          // the hoop force depends on the nonlocal field through tau33
+          k_UA( 0, A, 0, B ) += ( +N( A ) * invF33 * algorithmicModuli3D.dTau_dA( 2, 2 ) * N( B ) / r ) * J0xWxRx2Pi;
         }
       }
 
