@@ -1499,6 +1499,52 @@ void testAxiSymmetricCriticalTimeStepUsesTheMassDistributionOfTheRing()
                              "value " + std::to_string( criticalTimeStep[1] ) + "." );
 }
 
+// A body force acts on the full revolution, as the internal forces do: f 2 pi int r dA = f 2 pi 1.5 per direction
+// for the CX8RUL ring r in [1, 2], z in [0, 1].
+void testAxiSymmetricBodyForceIntegratesOverTheRing()
+{
+  const auto intType = Marmot::Discretizations::Elements::Quadrature::IntegrationTypes::ReducedIntegration;
+  const auto secType = DisplacementFiniteStrainULElement< 2, 8 >::SectionType::PlaneStrain;
+
+  const std::vector< double > nodeCoordsVec =
+    { 1.0, 0.0, 2.0, 0.0, 2.0, 1.0, 1.0, 1.0, 1.5, 0.0, 2.0, 0.5, 1.5, 1.0, 1.0, 0.5 };
+
+  auto element = std::make_unique< AxiSymmetricDisplacementFiniteStrainULElement< 8 > >( 1, intType, secType );
+  element->assignNodeCoordinates( nodeCoordsVec.data() );
+
+  const std::vector< double >              matProps = { 1.0, 1.0, 1.0 }; // K, G, density
+  Marmot::Discretizations::MaterialSection materialSection( "COMPRESSIBLENEOHOOKE",
+                                                            matProps.data(),
+                                                            static_cast< int >( matProps.size() ) );
+  element->assignProperty( materialSection );
+  const std::vector< double >                elPropsVec = { 1.0 }; // dummy thickness; see comment above
+  Marmot::Discretizations::ElementProperties elProps( elPropsVec.data(), static_cast< int >( elPropsVec.size() ) );
+  element->assignProperty( elProps );
+
+  const int             nStateVarsTotal = element->getNumberOfRequiredStateVars();
+  std::vector< double > stateVars( nStateVarsTotal, 0.0 );
+  element->assignStateVars( stateVars.data(), nStateVarsTotal );
+  element->initializeYourself();
+
+  const int                   nNodes     = 8;
+  const int                   nDof       = element->getNDofPerElement();
+  const double                ringVolume = 2 * Marmot::Math::Constants::Pi * 1.5;
+  const std::vector< double > load( { 1.0, 2.0 } );
+  const std::vector< double > QTotal( nDof, 0.0 );
+  std::vector< double >       P( nDof, 0.0 );
+  std::vector< double >       K( nDof * nDof, 0.0 ); // body force has zero stiffness contribution; unused here
+  element->computeBodyForce( P.data(), K.data(), load.data(), QTotal.data(), 0.0, 1.0 );
+
+  for ( int d = 0; d < 2; d++ ) {
+    double force = 0.0;
+    for ( int a = 0; a < nNodes; a++ )
+      force += P[a * 2 + d];
+    throwExceptionOnFailure( checkIfEqual( force, load[d] * ringVolume, 1e-10 ),
+                             "AxiSymmetricDisplacementFiniteStrainULElement: body force " + std::to_string( force ) +
+                               " differs from the force on the ring " + std::to_string( load[d] * ringVolume ) + "." );
+  }
+}
+
 int main()
 {
   auto tests = std::vector< std::function< void() > >{
@@ -1529,6 +1575,7 @@ int main()
     testAxiSymmetricComputeKernelsHandsTheMaterialTheDissipationDensity,
     testAxiSymmetricInertiaIntegratesTheMassOfTheRing,
     testAxiSymmetricCriticalTimeStepUsesTheMassDistributionOfTheRing,
+    testAxiSymmetricBodyForceIntegratesOverTheRing,
   };
 
   executeTestsAndCollectExceptions( tests );

@@ -117,6 +117,8 @@ All notable changes to Marmot are documented in this file. The format follows
   `CX8RUL`), and with them the critical time step, were integrated over the cross section without the factor 2πr
   of the internal forces. The new `DisplacementFiniteStrainULElement::domainMeasureFactor()` gives the factor
   (1 for the other sections).
+- **Results:** the body force of the axisymmetric finite-strain UL elements (`CX8UL`, `CX8RUL`) was integrated
+  without the factor 2πr.
 - **Results:** sign of the hoop term in the axisymmetric finite-strain UL elements (`CX8UL`, `CX8RUL`, residual and
   stiffness): it was subtracted, so any state with nonzero hoop stress was wrong (e.g. homogeneous radial expansion
   off by a factor of roughly 5–60). Uniaxial loading with zero hoop stress was unaffected.

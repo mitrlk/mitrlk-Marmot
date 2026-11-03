@@ -364,9 +364,9 @@ namespace Marmot::Discretizations::Elements {
      * @brief Factor between the quadrature weight \f$J_0 w\f$ and the measure of the element domain at \f$\xi\f$.
      * @details 1 for the solid, plane strain and plane stress sections, whose thickness or cross section is already in
      * \f$J_0 w\f$. An axisymmetric element covers the full revolution and returns \f$2\pi r(\xi)\f$, the factor of
-     * its internal forces. computeConsistentInertia(), computeLumpedInertia() and
-     * computeCriticalTimeStepForExplicitDynamics() apply it, so that the mass covers the same domain as the internal
-     * forces.
+     * its internal forces. computeConsistentInertia(), computeLumpedInertia(),
+     * computeCriticalTimeStepForExplicitDynamics() and computeBodyForce() apply it, so that the mass and the body force
+     * cover the same domain as the internal forces.
      * @param[in] xi Point in the parent element.
      * @return The factor at \f$\xi\f$.
      */
@@ -972,7 +972,7 @@ namespace Marmot::Discretizations::Elements {
     const Eigen::Map< const Eigen::Matrix< double, nDim, 1 > > f( load );
 
     for ( const auto& qp : qps )
-      r_U += this->NB( this->N( qp.xi ) ).transpose() * f * qp.J0xW;
+      r_U += this->NB( this->N( qp.xi ) ).transpose() * f * ( qp.J0xW * domainMeasureFactor( qp.xi ) );
   }
 
   template < int nDim, int nNodes >
