@@ -1387,6 +1387,118 @@ void testAxiSymmetricComputeKernelsHandsTheMaterialTheDissipationDensity()
                                std::to_string( element->qps[i].managedStateVars->dissipation ) + "." );
 }
 
+// The axisymmetric element integrates its internal forces over the full revolution, so its mass has to cover the
+// same domain: rho 2 pi int r dA, i.e. rho 2 pi 1.5 for the ring r in [1, 2], z in [0, 1] of the CX8RUL below.
+void testAxiSymmetricInertiaIntegratesTheMassOfTheRing()
+{
+  const auto intType = Marmot::Discretizations::Elements::Quadrature::IntegrationTypes::ReducedIntegration;
+  const auto secType = DisplacementFiniteStrainULElement< 2, 8 >::SectionType::PlaneStrain;
+
+  // corners, then the midsides of the edges 0-1, 1-2, 2-3, 3-0
+  const std::vector< double > nodeCoordsVec =
+    { 1.0, 0.0, 2.0, 0.0, 2.0, 1.0, 1.0, 1.0, 1.5, 0.0, 2.0, 0.5, 1.5, 1.0, 1.0, 0.5 };
+
+  auto element = std::make_unique< AxiSymmetricDisplacementFiniteStrainULElement< 8 > >( 1, intType, secType );
+  element->assignNodeCoordinates( nodeCoordsVec.data() );
+
+  const double                             density  = 2.5;
+  const std::vector< double >              matProps = { 1.0, 1.0, density }; // K, G, density
+  Marmot::Discretizations::MaterialSection materialSection( "COMPRESSIBLENEOHOOKE",
+                                                            matProps.data(),
+                                                            static_cast< int >( matProps.size() ) );
+  element->assignProperty( materialSection );
+  const std::vector< double >                elPropsVec = { 1.0 }; // dummy thickness; see comment above
+  Marmot::Discretizations::ElementProperties elProps( elPropsVec.data(), static_cast< int >( elPropsVec.size() ) );
+  element->assignProperty( elProps );
+
+  const int             nStateVarsTotal = element->getNumberOfRequiredStateVars();
+  std::vector< double > stateVars( nStateVarsTotal, 0.0 );
+  element->assignStateVars( stateVars.data(), nStateVarsTotal );
+  element->initializeYourself();
+
+  const int    nNodes   = 8;
+  const int    nDof     = element->getNDofPerElement();
+  const double ringMass = density * 2 * Marmot::Math::Constants::Pi * 1.5;
+
+  std::vector< double > M( nDof * nDof, 0.0 );
+  element->computeConsistentInertia( M.data() );
+  Eigen::Map< Eigen::MatrixXd > Mmat( M.data(), nDof, nDof );
+  throwExceptionOnFailure( Mmat.isApprox( Mmat.transpose(), 1e-12 ),
+                           "AxiSymmetricDisplacementFiniteStrainULElement: consistent mass matrix is not symmetric." );
+
+  std::vector< double > LMM( nDof, 0.0 );
+  element->computeLumpedInertia( LMM.data() );
+
+  for ( int d = 0; d < 2; d++ ) {
+    Eigen::VectorXd uRigid = Eigen::VectorXd::Zero( nDof );
+    for ( int a = 0; a < nNodes; a++ )
+      uRigid[a * 2 + d] = 1.0;
+
+    const double consistentMass = uRigid.transpose() * Mmat * uRigid;
+    throwExceptionOnFailure( checkIfEqual( consistentMass, ringMass, 1e-10 ),
+                             "AxiSymmetricDisplacementFiniteStrainULElement: consistent mass " +
+                               std::to_string( consistentMass ) + " differs from the mass of the ring " +
+                               std::to_string( ringMass ) + "." );
+
+    double lumpedMass = 0.0;
+    for ( int a = 0; a < nNodes; a++ ) {
+      throwExceptionOnFailure( LMM[a * 2 + d] > 0.0,
+                               "AxiSymmetricDisplacementFiniteStrainULElement: lumped mass entry is not strictly "
+                               "positive (node " +
+                                 std::to_string( a ) + ")." );
+      lumpedMass += LMM[a * 2 + d];
+    }
+    throwExceptionOnFailure( checkIfEqual( lumpedMass, ringMass, 1e-10 ),
+                             "AxiSymmetricDisplacementFiniteStrainULElement: lumped mass " +
+                               std::to_string( lumpedMass ) + " differs from the mass of the ring " +
+                               std::to_string( ringMass ) + "." );
+  }
+}
+
+// The critical time step scales l / c with sqrt( nNodes m_min / m ), from the same lumped mass fractions that
+// computeLumpedInertia() assembles. For the Quad4 ring r in [1, 2], z in [0, 1], the 2 x 2 rule gives the inner nodes
+// 2 / 9 of the mass and the outer nodes 5 / 18, so the factor is sqrt( 8 / 9 ). The plane strain element of the same
+// shape has equal fractions, the factor 1, and the same l / c.
+void testAxiSymmetricCriticalTimeStepUsesTheMassDistributionOfTheRing()
+{
+  const auto intType = Marmot::Discretizations::Elements::Quadrature::IntegrationTypes::FullIntegration;
+  const auto secType = DisplacementFiniteStrainULElement< 2, 4 >::SectionType::PlaneStrain;
+
+  const std::vector< double >                nodeCoordsVec = { 1.0, 0.0, 2.0, 0.0, 2.0, 1.0, 1.0, 1.0 };
+  const std::vector< double >                matProps      = { 1.0, 1.0, 1.0 }; // K, G, density
+  const std::vector< double >                elPropsVec    = { 1.0 };           // thickness
+  Marmot::Discretizations::ElementProperties elProps( elPropsVec.data(), static_cast< int >( elPropsVec.size() ) );
+
+  auto axiSymmetric = std::make_unique< AxiSymmetricDisplacementFiniteStrainULElement< 4 > >( 1, intType, secType );
+  auto planeStrain  = std::make_unique< DisplacementFiniteStrainULElement< 2, 4 > >( 2, intType, secType );
+
+  std::vector< std::vector< double > > stateVars( 2 );
+  std::vector< double >                criticalTimeStep( 2, 0.0 );
+  const std::vector< double >          QTotal( 8, 0.0 );
+
+  int e = 0;
+  for ( DisplacementFiniteStrainULElement< 2, 4 >* element :
+        { static_cast< DisplacementFiniteStrainULElement< 2, 4 >* >( axiSymmetric.get() ), planeStrain.get() } ) {
+    element->assignNodeCoordinates( nodeCoordsVec.data() );
+    Marmot::Discretizations::MaterialSection materialSection( "COMPRESSIBLENEOHOOKE",
+                                                              matProps.data(),
+                                                              static_cast< int >( matProps.size() ) );
+    element->assignProperty( materialSection );
+    element->assignProperty( elProps );
+    const int nStateVarsTotal = element->getNumberOfRequiredStateVars();
+    stateVars[e].assign( nStateVarsTotal, 0.0 );
+    element->assignStateVars( stateVars[e].data(), nStateVarsTotal );
+    element->initializeYourself();
+    element->computeCriticalTimeStepForExplicitDynamics( criticalTimeStep[e], QTotal.data() );
+    e++;
+  }
+
+  throwExceptionOnFailure( checkIfEqual( criticalTimeStep[0], std::sqrt( 8.0 / 9.0 ) * criticalTimeStep[1], 1e-12 ),
+                           "AxiSymmetricDisplacementFiniteStrainULElement: critical time step " +
+                             std::to_string( criticalTimeStep[0] ) + " is not sqrt( 8 / 9 ) times the plane strain " +
+                             "value " + std::to_string( criticalTimeStep[1] ) + "." );
+}
+
 int main()
 {
   auto tests = std::vector< std::function< void() > >{
@@ -1415,6 +1527,8 @@ int main()
     testAxiSymmetricComputeKernelsExplicitMatchesImplicitResidual,
     testAxiSymmetricHomogeneousRadialExpansionIsInEquilibrium,
     testAxiSymmetricComputeKernelsHandsTheMaterialTheDissipationDensity,
+    testAxiSymmetricInertiaIntegratesTheMassOfTheRing,
+    testAxiSymmetricCriticalTimeStepUsesTheMassDistributionOfTheRing,
   };
 
   executeTestsAndCollectExceptions( tests );

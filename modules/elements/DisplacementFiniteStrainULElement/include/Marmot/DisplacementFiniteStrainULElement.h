@@ -361,6 +361,18 @@ namespace Marmot::Discretizations::Elements {
     void computeKernelsExplicit( const double* QTotal, const double* dQ, double* Pe, double time, double dT ) override;
 
     /**
+     * @brief Factor between the quadrature weight \f$J_0 w\f$ and the measure of the element domain at \f$\xi\f$.
+     * @details 1 for the solid, plane strain and plane stress sections, whose thickness or cross section is already in
+     * \f$J_0 w\f$. An axisymmetric element covers the full revolution and returns \f$2\pi r(\xi)\f$, the factor of
+     * its internal forces. computeConsistentInertia(), computeLumpedInertia() and
+     * computeCriticalTimeStepForExplicitDynamics() apply it, so that the mass covers the same domain as the internal
+     * forces.
+     * @param[in] xi Point in the parent element.
+     * @return The factor at \f$\xi\f$.
+     */
+    virtual double domainMeasureFactor( [[maybe_unused]] const XiSized& xi ) const { return 1.0; }
+
+    /**
      * @brief Compute consistent mass matrix using material density.
      * @details \f$\mathbf{M}_e = \sum_{p} \rho\, \mathbf{N}^\mathsf{T}\mathbf{N}\, J_0 w\f$ over the
      * points \f$p\f$ of the full Gauss rule of the element's shape, in the undeformed configuration,
@@ -977,7 +989,7 @@ namespace Marmot::Discretizations::Elements {
       const double rho           = qp.material->getDensity( qp.managedStateVars->materialStateVars.data() );
       const double detJ          = this->Jacobian( this->dNdXi( xi ) ).determinant();
       const auto   N_            = this->NB( this->N( xi ) );
-      Me += N_.transpose() * N_ * ( point.weight * detJ * sectionFactor ) * rho;
+      Me += N_.transpose() * N_ * ( point.weight * detJ * sectionFactor * domainMeasureFactor( xi ) ) * rho;
     }
   }
 
@@ -1002,8 +1014,9 @@ namespace Marmot::Discretizations::Elements {
     Eigen::VectorXd rowSumsHighOrder = Eigen::VectorXd::Zero( nNodes );
     Eigen::VectorXd rowSumsLinear    = Eigen::VectorXd::Zero( nNodesLinear );
     for ( const auto& qp : qps ) {
-      rowSumsHighOrder += Eigen::VectorXd( this->N( qp.xi ) ) * qp.J0xW;
-      rowSumsLinear += Eigen::VectorXd( linGeometryEl.N( qp.xi ) ) * qp.J0xW;
+      const double J0xWxMeasure = qp.J0xW * domainMeasureFactor( qp.xi );
+      rowSumsHighOrder += Eigen::VectorXd( this->N( qp.xi ) ) * J0xWxMeasure;
+      rowSumsLinear += Eigen::VectorXd( linGeometryEl.N( qp.xi ) ) * J0xWxMeasure;
     }
     const double weight = Marmot::Discretizations::Elements::MassLumping::manifoldBlendWeight( rowSumsHighOrder,
                                                                                                rowSumsLinear );
@@ -1016,7 +1029,7 @@ namespace Marmot::Discretizations::Elements {
       N_weighted.head( nNodesLinear ) += ( 1.0 - weight ) * N_lin;
 
       const double    rho = qp.material->getDensity( qp.managedStateVars->materialStateVars.data() );
-      Eigen::VectorXd m_  = N_weighted * qp.J0xW * rho;
+      Eigen::VectorXd m_  = N_weighted * ( qp.J0xW * domainMeasureFactor( qp.xi ) ) * rho;
       for ( int i = 0; i < nNodes; i++ ) {
         for ( int d = 0; d < nDim; d++ )
           LMM( i * nDim + d ) += m_( i );
@@ -1058,8 +1071,9 @@ namespace Marmot::Discretizations::Elements {
     Eigen::VectorXd rowSumsHighOrder = Eigen::VectorXd::Zero( nNodes );
     Eigen::VectorXd rowSumsLinear    = Eigen::VectorXd::Zero( nNodesLinear );
     for ( const auto& qp : qps ) {
-      rowSumsHighOrder += Eigen::VectorXd( this->N( qp.xi ) ) * qp.J0xW;
-      rowSumsLinear += Eigen::VectorXd( linGeometryEl.N( qp.xi ) ) * qp.J0xW;
+      const double J0xWxMeasure = qp.J0xW * domainMeasureFactor( qp.xi );
+      rowSumsHighOrder += Eigen::VectorXd( this->N( qp.xi ) ) * J0xWxMeasure;
+      rowSumsLinear += Eigen::VectorXd( linGeometryEl.N( qp.xi ) ) * J0xWxMeasure;
     }
     const double weight = Marmot::Discretizations::Elements::MassLumping::manifoldBlendWeight( rowSumsHighOrder,
                                                                                                rowSumsLinear );
@@ -1166,10 +1180,22 @@ namespace Marmot::Discretizations::Elements {
   class AxiSymmetricDisplacementFiniteStrainULElement : public DisplacementFiniteStrainULElement< 2, nNodes > {
 
     using DisplacementFiniteStrainULElement< 2, nNodes >::DisplacementFiniteStrainULElement;
+    using XiSized = typename DisplacementFiniteStrainULElement< 2, nNodes >::XiSized;
 
-    void computeKernels( const double* QTotal, const double* dQ, double* Pe, double* Ke, double time, double dT );
+    void computeKernels( const double* QTotal, const double* dQ, double* Pe, double* Ke, double time, double dT )
+      override;
 
-    void computeKernelsExplicit( const double* QTotal, const double* dQ, double* Pe, double time, double dT );
+    void computeKernelsExplicit( const double* QTotal, const double* dQ, double* Pe, double time, double dT ) override;
+
+    /**
+     * @brief The element covers the full revolution: \f$2\pi r(\xi)\f$, the weight of its internal forces.
+     * @param[in] xi Point in the parent element.
+     * @return \f$2\pi r(\xi)\f$.
+     */
+    double domainMeasureFactor( const XiSized& xi ) const override
+    {
+      return 2 * Marmot::Math::Constants::Pi * ( this->NB( this->N( xi ) ) * this->coordinates )( 0 );
+    }
   };
 
   template < int nNodes >

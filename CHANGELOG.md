@@ -113,6 +113,10 @@ All notable changes to Marmot are documented in this file. The format follows
   material got the densities 2πr times too large. A material that carries them over (`FiniteStrainJ2Plasticity`,
   the Hughes-Winget wrappers) therefore stored a wrong dissipation, and the element reported a wrong internal
   energy. The materials in this repository do not use the two values for the stress.
+- **Results:** the consistent and the lumped mass of the axisymmetric finite-strain UL elements (`CX8UL`,
+  `CX8RUL`), and with them the critical time step, were integrated over the cross section without the factor 2πr
+  of the internal forces. The new `DisplacementFiniteStrainULElement::domainMeasureFactor()` gives the factor
+  (1 for the other sections).
 - **Results:** sign of the hoop term in the axisymmetric finite-strain UL elements (`CX8UL`, `CX8RUL`, residual and
   stiffness): it was subtracted, so any state with nonzero hoop stress was wrong (e.g. homogeneous radial expansion
   off by a factor of roughly 5–60). Uniaxial loading with zero hoop stress was unaffected.
